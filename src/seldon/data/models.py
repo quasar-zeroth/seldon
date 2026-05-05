@@ -53,6 +53,7 @@ class KBEntry(Base, TimestampMixin):
     perspective_tags: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
     superseded_by: Mapped[str | None] = mapped_column(ForeignKey("kb_entries.id"))
     version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    content_embedding: Mapped[list[float] | None] = mapped_column(JSON)
     embedding_metadata: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
     vector_index_pointer: Mapped[str | None] = mapped_column(String(255))
     versions: Mapped[list["KBEntryVersion"]] = relationship(back_populates="entry", cascade="all, delete-orphan")
@@ -79,6 +80,18 @@ class KBEntryContradiction(Base):
     status: Mapped[str] = mapped_column(String(32), default="open", nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class Scenario(Base, TimestampMixin):
+    __tablename__ = "scenarios"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    description: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    status: Mapped[str] = mapped_column(String(32), default="active", nullable=False)
+    target_question: Mapped[str] = mapped_column(Text, nullable=False)
+    time_horizon: Mapped[str] = mapped_column(String(255), default="", nullable=False)
+    erg_snapshot_id: Mapped[str | None] = mapped_column(String(36))
+    kb_snapshot_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class ERGNode(Base, TimestampMixin):
@@ -111,9 +124,20 @@ class ERGEdge(Base, TimestampMixin):
     __table_args__ = (UniqueConstraint("source_node_id", "target_node_id", "relationship_type", name="uq_erg_edge_relation"),)
 
 
+class GraphSnapshot(Base):
+    __tablename__ = "graph_snapshots"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    scenario_id: Mapped[str | None] = mapped_column(ForeignKey("scenarios.id"))
+    snapshot: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    reason: Mapped[str | None] = mapped_column(Text)
+    agent_id: Mapped[str | None] = mapped_column(String(128))
+
+
 class ScenarioPrediction(Base, TimestampMixin):
     __tablename__ = "scenario_predictions"
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    scenario_id: Mapped[str | None] = mapped_column(ForeignKey("scenarios.id"))
     statement: Mapped[str] = mapped_column(Text, nullable=False)
     scope: Mapped[str] = mapped_column(Text, default="", nullable=False)
     timeframe: Mapped[str] = mapped_column(String(255), default="", nullable=False)
@@ -148,6 +172,19 @@ class ScenarioEvidenceLink(Base):
     kb_entry_id: Mapped[str] = mapped_column(ForeignKey("kb_entries.id"), nullable=False)
     relationship: Mapped[str] = mapped_column(String(64), default="supports", nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+
+class FeedbackEntry(Base):
+    __tablename__ = "feedback_entries"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    scenario_id: Mapped[str | None] = mapped_column(ForeignKey("scenarios.id"))
+    prediction_id: Mapped[str | None] = mapped_column(ForeignKey("scenario_predictions.id"))
+    actual_outcome: Mapped[str] = mapped_column(Text, nullable=False)
+    recorded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    comparison: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    missed_factors: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    graph_corrections: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list, nullable=False)
+    lessons_learned: Mapped[str] = mapped_column(Text, default="", nullable=False)
 
 
 class AgentRun(Base):

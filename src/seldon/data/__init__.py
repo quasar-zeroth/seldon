@@ -1,7 +1,7 @@
 """Durable persistence layer for The Seldon Project."""
 from .database import create_all, drop_all, make_engine, make_session_factory, session_scope, sqlite_url
 from .models import Base
-from .repositories import AgentRunRepository, AuditRepository, GraphRepository, KBRepository, MarkdownExporter, ScenarioRepository
+from .repositories import AgentRunRepository, AuditRepository, DatabaseModelInvocationRecorder, GraphRepository, KBRepository, MarkdownExporter, ScenarioRepository, SourceRepository
 
 __all__ = [
     "Base",
@@ -13,8 +13,10 @@ __all__ = [
     "sqlite_url",
     "AgentRunRepository",
     "AuditRepository",
+    "DatabaseModelInvocationRecorder",
     "GraphRepository",
     "KBRepository",
     "MarkdownExporter",
     "ScenarioRepository",
+    "SourceRepository",
 ]

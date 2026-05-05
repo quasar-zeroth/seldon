@@ -6,9 +6,11 @@ fallbacks, JSON recovery, and durable invocation metadata.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import time
+import random
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -191,6 +193,22 @@ class OpenRouterClient:
                 last_error = exc
         raise LLMResponseError(f"All OpenRouter model candidates failed: {last_error}") from last_error
 
+    def _retry_delay(self, response: httpx.Response | None, attempt: int) -> float:
+        if response is not None and response.headers.get("Retry-After"):
+            try:
+                return float(response.headers["Retry-After"])
+            except ValueError:
+                pass
+        return min(8.0, 0.25 * (2 ** attempt)) + random.uniform(0, 0.05)
+
+    def _should_retry(self, response: httpx.Response | None, exc: Exception | None) -> bool:
+        if isinstance(exc, (httpx.TimeoutException, httpx.NetworkError)):
+            return True
+        return response is not None and response.status_code in {429, 500, 502, 503, 504}
+
+    async def _async_sleep(self, seconds: float) -> None:
+        await asyncio.sleep(seconds)
+
     def _complete_once(self, model: str, messages: list[dict], system: str | None, kwargs: dict[str, Any]) -> OpenRouterResponse:
         started = time.perf_counter()
         payload = self.build_payload(messages, system=system, **{**kwargs, "model": model})
@@ -198,18 +216,32 @@ class OpenRouterClient:
         close_client = self._client is None
         raw: dict[str, Any] = {}
         error: str | None = None
+        max_retries = int(kwargs.get("max_retries", 2))
         try:
-            response = client.post(
-                f"{self.config.base_url.rstrip('/')}/chat/completions",
-                headers=self._headers(),
-                json=payload,
-            )
-            response.raise_for_status()
-            raw = response.json()
-            parsed = self._parse_response(raw, kwargs.get("schema"))
-            metadata = self._metadata(raw, model, started, error=None)
-            self.recorder.record({**metadata, "agent": kwargs.get("agent"), "ok": True})
-            return OpenRouterResponse(parsed, model=model, raw=raw, metadata=metadata)
+            for attempt in range(max_retries + 1):
+                response: httpx.Response | None = None
+                exc: Exception | None = None
+                try:
+                    response = client.post(
+                        f"{self.config.base_url.rstrip('/')}/chat/completions",
+                        headers=self._headers(),
+                        json=payload,
+                    )
+                    if self._should_retry(response, None) and attempt < max_retries:
+                        time.sleep(self._retry_delay(response, attempt))
+                        continue
+                    response.raise_for_status()
+                    raw = response.json()
+                    parsed = self._parse_response(raw, kwargs.get("schema"))
+                    metadata = self._metadata(raw, model, started, error=None)
+                    self.recorder.record({**metadata, "agent": kwargs.get("agent"), "ok": True})
+                    return OpenRouterResponse(parsed, model=model, raw=raw, metadata=metadata)
+                except Exception as retry_exc:
+                    exc = retry_exc
+                    if self._should_retry(response, exc) and attempt < max_retries:
+                        time.sleep(self._retry_delay(response, attempt))
+                        continue
+                    raise
         except Exception as exc:
             error = str(exc)
             self.recorder.record({**self._metadata(raw, model, started, error=error), "agent": kwargs.get("agent"), "ok": False})
@@ -217,6 +249,7 @@ class OpenRouterClient:
         finally:
             if close_client:
                 client.close()
+        raise LLMResponseError("unreachable OpenRouter retry state")
 
     async def acomplete_json(self, messages: list[dict], system: str | None = None, **kwargs: Any) -> dict:
         return (await self.acomplete_json_with_metadata(messages, system=system, **kwargs)).payload
@@ -236,24 +269,37 @@ class OpenRouterClient:
         client = self._async_client or httpx.AsyncClient(timeout=self.config.timeout_seconds)
         close_client = self._async_client is None
         raw: dict[str, Any] = {}
+        max_retries = int(kwargs.get("max_retries", 2))
         try:
-            response = await client.post(
-                f"{self.config.base_url.rstrip('/')}/chat/completions",
-                headers=self._headers(),
-                json=payload,
-            )
-            response.raise_for_status()
-            raw = response.json()
-            parsed = self._parse_response(raw, kwargs.get("schema"))
-            metadata = self._metadata(raw, model, started, error=None)
-            self.recorder.record({**metadata, "agent": kwargs.get("agent"), "ok": True})
-            return OpenRouterResponse(parsed, model=model, raw=raw, metadata=metadata)
+            for attempt in range(max_retries + 1):
+                response: httpx.Response | None = None
+                try:
+                    response = await client.post(
+                        f"{self.config.base_url.rstrip('/')}/chat/completions",
+                        headers=self._headers(),
+                        json=payload,
+                    )
+                    if self._should_retry(response, None) and attempt < max_retries:
+                        await self._async_sleep(self._retry_delay(response, attempt))
+                        continue
+                    response.raise_for_status()
+                    raw = response.json()
+                    parsed = self._parse_response(raw, kwargs.get("schema"))
+                    metadata = self._metadata(raw, model, started, error=None)
+                    self.recorder.record({**metadata, "agent": kwargs.get("agent"), "ok": True})
+                    return OpenRouterResponse(parsed, model=model, raw=raw, metadata=metadata)
+                except Exception as exc:
+                    if self._should_retry(response, exc) and attempt < max_retries:
+                        await self._async_sleep(self._retry_delay(response, attempt))
+                        continue
+                    raise
         except Exception as exc:
             self.recorder.record({**self._metadata(raw, model, started, error=str(exc)), "agent": kwargs.get("agent"), "ok": False})
             raise
         finally:
             if close_client:
                 await client.aclose()
+        raise LLMResponseError("unreachable OpenRouter retry state")
 
     def _parse_response(self, raw: dict[str, Any], schema: Any | None) -> dict[str, Any]:
         choices = raw.get("choices") or []

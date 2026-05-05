@@ -394,6 +394,11 @@ Frontend/API carry-forward:
 
 - Implement the Phase C frontend tasks after Phase D exposes the API: basic scenario list and KB entry detail view.
 
+Phase C.1 implementation note:
+
+- Implemented in the backend with `scenarios`, `feedback_entries`, graph snapshots/diffs, content embeddings, expanded schemas, KB temporal/perspective/current filters, decay/confidence helpers, graph reuse candidates, relational model invocation recording, and OpenRouter 429/5xx retry/backoff tests.
+- Remaining frontend/API carry-forward stays in Phase D because it depends on the FastAPI shell and web app skeleton.
+
 ## Phase D — FastAPI Backend Shell
 
 Goal: expose stable service endpoints for frontend and future automations.
