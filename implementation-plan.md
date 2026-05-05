@@ -358,6 +358,42 @@ Frontend tasks:
 - Basic scenario list from API.
 - Basic KB entry detail view.
 
+Phase C implementation note:
+
+- The backend persistence core is in place: SQLAlchemy models, Alembic migration, SQLite support, repository interfaces, audit records, version rows, and Markdown snapshot exporters.
+- The Phase C frontend tasks depend on the Phase D FastAPI shell and `apps/web`; they are intentionally deferred into Phase D.
+
+## Phase C.1 — Persistence Completion and Plan Alignment
+
+Goal: close the remaining data-architecture gaps found during the Phase A–C verification pass before building substantial agent workflows on top of the DB.
+
+Backend tasks:
+
+- Add full Pydantic create/read/update schemas for every Phase C table, not just the primary create contracts:
+  - `sources`, `kb_entry_versions`, `kb_entry_contradictions`
+  - `scenario_versions`, `scenario_evidence_links`
+  - `agent_runs`, `agent_messages`, `model_invocations`, `audit_log`
+- Add a relational `scenarios` table for the plan-level Scenario object (`name`, `description`, `target_question`, `time_horizon`, `erg_snapshot_id`, `kb_snapshot_at`) and link `scenario_predictions` to it.
+- Add `feedback_entries` for the prediction-system plan's feedback store (`actual_outcome`, comparison, missed factors, graph corrections, lessons learned).
+- Add `content_embedding` or an explicit embedding/vector record contract for KB entries, while keeping `embedding_metadata` and `vector_index_pointer` as backend metadata.
+- Extend `KBRepository.search` beyond substring/topic/entity filters with:
+  - semantic/vector search adapter boundary
+  - temporal filters (`valid_from`, `valid_until`, `created_at`, `updated_at`)
+  - delta queries (`updated_since`)
+  - supersession/current-only filtering
+  - scenario lookup
+  - perspective filtering
+  - decay scoring and confidence aggregation helpers
+- Add graph snapshot persistence/export so ERG snapshots can be versioned and diffed over time.
+- Add graph reuse helpers for cross-scenario node/edge discovery and import suggestions.
+- Bridge Phase B invocation metadata into the relational `model_invocations` repository; keep JSONL only as an optional local debug/export path.
+- Add OpenRouter retry/backoff for 429/5xx responses with tests, since current fallback-model retry does not yet implement status-aware backoff.
+- Add repository tests for transaction rollback behavior, read/update schemas, KB temporal/perspective filters, graph snapshots, feedback entries, and relational model invocation recording.
+
+Frontend/API carry-forward:
+
+- Implement the Phase C frontend tasks after Phase D exposes the API: basic scenario list and KB entry detail view.
+
 ## Phase D — FastAPI Backend Shell
 
 Goal: expose stable service endpoints for frontend and future automations.

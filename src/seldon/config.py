@@ -66,8 +66,15 @@ class KnowledgeGraphConfig(BaseModel):
     auto_extract_entities: bool = True
 
 
+class DatabaseConfig(BaseModel):
+    url: str | None = None
+    sqlite_path: Path = Path("./data/seldon.db")
+    echo: bool = False
+
+
 class SeldonConfig(BaseModel):
     data_dir: Path = Path("./data")
+    database: DatabaseConfig = Field(default_factory=DatabaseConfig)
     llm: OpenRouterConfig = Field(default_factory=OpenRouterConfig)
     agents: AgentsConfig = Field(default_factory=AgentsConfig)
     predictions: PredictionConfig = Field(default_factory=PredictionConfig)
