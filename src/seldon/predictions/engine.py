@@ -339,7 +339,13 @@ class PredictionEngine:
             }
         ]
 
-        result = self.llm.complete_json(messages=messages, system=PREDICTION_SYSTEM)
+        result = self.llm.complete_json(
+            messages=messages,
+            system=PREDICTION_SYSTEM,
+            model=getattr(self.pred_cfg, "model", None),
+            model_profile=getattr(self.pred_cfg, "model_profile", "balanced"),
+            agent="prediction_engine",
+        )
 
         stats = {
             "date": today_str,
@@ -498,5 +504,5 @@ class PredictionEngine:
         preds = self._load_active_predictions()
         return {
             "active_predictions": len(preds),
-            "model": self.pred_cfg.model,
+            "model": self.pred_cfg.model or self.pred_cfg.model_profile,
         }

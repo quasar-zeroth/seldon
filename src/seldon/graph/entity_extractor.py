@@ -51,10 +51,12 @@ class EntityExtractor:
 
     def __init__(
         self,
-        entity_extraction_model: str = "google/gemini-2.5-flash-preview",
+        entity_extraction_model: str | None = None,
+        entity_extraction_model_profile: str = "fast",
         llm_client: LLMClientProtocol | None = None,
     ):
         self.model = entity_extraction_model
+        self.model_profile = entity_extraction_model_profile
         self.llm = llm_client or NullLLMClient()
 
     def _extract_and_add(self, text: str, graph: KnowledgeGraph, context_note: str = "") -> dict:
@@ -64,6 +66,9 @@ class EntityExtractor:
         result = self.llm.complete_json(
             messages=[{"role": "user", "content": prompt}],
             system=EXTRACTION_SYSTEM,
+            model=self.model,
+            model_profile=self.model_profile,
+            agent="entity_extractor",
         )
 
         if not result:

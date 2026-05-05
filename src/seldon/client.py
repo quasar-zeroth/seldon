@@ -4,7 +4,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from .config import SeldonConfig
-from .llm import LLMClientProtocol
+from .llm import LLMClientProtocol, ModelInvocationRecorder, OpenRouterClient
 from .predictions.engine import PredictionEngine
 from .graph.knowledge_graph import KnowledgeGraph
 from .graph.entity_extractor import EntityExtractor
@@ -25,6 +25,7 @@ class GraphFacade:
     def extractor(self) -> EntityExtractor:
         return EntityExtractor(
             entity_extraction_model=self.config.knowledge_graph.entity_extraction_model,
+            entity_extraction_model_profile=self.config.knowledge_graph.entity_extraction_model_profile,
             llm_client=self.llm_client,
         )
 
@@ -48,7 +49,10 @@ class SeldonClient:
 
     def __init__(self, config: SeldonConfig | None = None, llm_client: LLMClientProtocol | None = None):
         self.config = config or SeldonConfig()
-        self.llm_client = llm_client
+        self.llm_client = llm_client or OpenRouterClient(
+            self.config.llm,
+            recorder=ModelInvocationRecorder(self.config.data_dir / "model_invocations.jsonl"),
+        )
         self.predictions = PredictionEngine(
             data_dir=self.config.data_dir,
             pred_cfg=self.config.predictions,

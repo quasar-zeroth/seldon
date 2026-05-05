@@ -325,6 +325,11 @@ Frontend tasks:
 - Settings page mock for model profiles.
 - Display model used on agent run rows.
 
+Phase B implementation note:
+
+- `apps/web` is not bootstrapped yet, so the Phase B frontend work is intentionally deferred.
+- The model-profile settings mock and agent-run model display should be implemented in Phase D after the FastAPI shell and web app skeleton exist.
+
 ## Phase C — Persistence Layer and Auditability
 
 Goal: replace file-only state with a durable DB-backed core.
@@ -377,6 +382,8 @@ Frontend tasks:
 - Next.js app bootstrapped in `apps/web`.
 - API client generated or manually typed.
 - Mission Control skeleton wired to `/health`, `/scenarios`, `/runs`.
+- Add Settings page mock for OpenRouter model profiles and agent-specific overrides deferred from Phase B.
+- Display model/profile used on agent run rows once `/runs` exposes invocation metadata.
 
 ## Phase E — Phase 1 Agents: Context Gathering
 
