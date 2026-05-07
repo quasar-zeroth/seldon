@@ -1,8 +1,6 @@
 """EntityExtractor: uses LLM to extract entities and relations from pipeline outputs."""
 from __future__ import annotations
 
-import json
-from typing import Any
 
 from rich.console import Console
 
@@ -219,8 +217,6 @@ class EntityExtractor:
         ticker = bet_data.get("asset_ticker", "")
         direction = bet_data.get("direction", "")
         prediction_slug = bet_data.get("prediction_slug", "")
-        thesis = bet_data.get("thesis", "")
-
         # Add bet node
         bet_node = graph.add_entity(
             "Bet",

@@ -1,7 +1,6 @@
 """Tests for KnowledgeGraph (graph/knowledge_graph.py)."""
 from __future__ import annotations
 
-import pytest
 
 from seldon.graph.knowledge_graph import KnowledgeGraph
 

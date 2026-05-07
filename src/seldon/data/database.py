@@ -6,6 +6,7 @@ from pathlib import Path
 
 from sqlalchemy import Engine, create_engine
 from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.pool import StaticPool
 
 from .models import Base
 
@@ -19,7 +20,10 @@ def sqlite_url(path: str | Path) -> str:
 def make_engine(url: str | None = None, *, sqlite_path: str | Path | None = None, echo: bool = False) -> Engine:
     db_url = url or sqlite_url(sqlite_path or "./data/seldon.db")
     connect_args = {"check_same_thread": False} if db_url.startswith("sqlite") else {}
-    return create_engine(db_url, echo=echo, future=True, connect_args=connect_args)
+    engine_kwargs = {"echo": echo, "future": True, "connect_args": connect_args}
+    if db_url in {"sqlite://", "sqlite:///:memory:"}:
+        engine_kwargs["poolclass"] = StaticPool
+    return create_engine(db_url, **engine_kwargs)
 
 
 def create_all(engine: Engine) -> None:

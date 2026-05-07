@@ -267,7 +267,6 @@ class PredictionEngine:
 
         # Collect sentiment from topic files that mention these tickers
         sentiments = []
-        today_str = datetime.now(tz=timezone.utc).strftime("%Y-%m-%d")
         for date_dir in sorted(topics_dir.iterdir(), reverse=True)[:7]:  # last 7 days
             if not date_dir.is_dir():
                 continue

@@ -42,7 +42,15 @@ def _jsonable(value: Any) -> Any:
 
 
 def row_to_dict(row: Any) -> dict[str, Any]:
-    return {c.name: _jsonable(getattr(row, c.name)) for c in row.__table__.columns}
+    data: dict[str, Any] = {}
+    for column in row.__table__.columns:
+        value = getattr(row, column.key)
+        # Source maps DB column "metadata" to Python attribute "metadata_" to
+        # avoid colliding with SQLAlchemy's Base.metadata descriptor.
+        if column.name == "metadata" and not isinstance(value, dict) and hasattr(row, "metadata_"):
+            value = getattr(row, "metadata_")
+        data[column.name] = _jsonable(value)
+    return data
 
 
 class AuditRepository:
@@ -311,6 +319,7 @@ class ScenarioRepository(BaseRepository[ScenarioPrediction]):
     def _version(self, row: ScenarioPrediction, *, actor: str, reason: str, version: int = 1) -> ScenarioVersion:
         v = ScenarioVersion(scenario_prediction_id=row.id, version=version, snapshot=row_to_dict(row), reason=reason, agent_id=actor)
         self.session.add(v)
+        self.session.flush()
         return v
 
 

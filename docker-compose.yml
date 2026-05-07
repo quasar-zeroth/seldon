@@ -1,0 +1,40 @@
+services:
+  api:
+    build: .
+    environment:
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      SELDON_API_KEY: ${SELDON_API_KEY:-}
+    volumes:
+      - seldon-data:/app/data
+    ports:
+      - "8000:8000"
+    depends_on:
+      - postgres
+
+  web:
+    image: node:22-slim
+    working_dir: /app
+    command: sh -c "npm ci && npm run build && npm run dev -- --hostname 0.0.0.0"
+    environment:
+      NEXT_PUBLIC_SELDON_API_URL: http://api:8000
+    volumes:
+      - ./apps/web:/app
+    ports:
+      - "3000:3000"
+    depends_on:
+      - api
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: seldon
+      POSTGRES_USER: seldon
+      POSTGRES_PASSWORD: seldon_dev_password
+    volumes:
+      - seldon-postgres:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+
+volumes:
+  seldon-data:
+  seldon-postgres:

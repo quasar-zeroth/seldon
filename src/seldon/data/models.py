@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from typing import Any
 from uuid import uuid4
 
-from sqlalchemy import DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 from sqlalchemy.types import JSON
 
@@ -185,6 +185,86 @@ class FeedbackEntry(Base):
     missed_factors: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
     graph_corrections: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list, nullable=False)
     lessons_learned: Mapped[str] = mapped_column(Text, default="", nullable=False)
+
+
+class OutcomeCheck(Base):
+    __tablename__ = "outcome_checks"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    prediction_id: Mapped[str] = mapped_column(ForeignKey("scenario_predictions.id"), nullable=False)
+    scenario_id: Mapped[str | None] = mapped_column(ForeignKey("scenarios.id"))
+    actual_outcome: Mapped[str] = mapped_column(Text, nullable=False)
+    resolved_outcome_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    probability_assigned: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
+    resolution_confidence: Mapped[float] = mapped_column(Float, default=1.0, nullable=False)
+    source_references: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    notes: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    checked_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+
+class HistoricalAnalogy(Base):
+    __tablename__ = "historical_analogies"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    prediction_id: Mapped[str | None] = mapped_column(ForeignKey("scenario_predictions.id"))
+    scenario_id: Mapped[str | None] = mapped_column(ForeignKey("scenarios.id"))
+    title: Mapped[str] = mapped_column(String(255), nullable=False)
+    similarity_score: Mapped[float] = mapped_column(Float, default=0.5, nullable=False)
+    historical_outcome: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    rationale: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    source_kb_ids: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+
+class BaseRateEvidence(Base):
+    __tablename__ = "base_rate_evidence"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    prediction_id: Mapped[str | None] = mapped_column(ForeignKey("scenario_predictions.id"))
+    scenario_id: Mapped[str | None] = mapped_column(ForeignKey("scenarios.id"))
+    metric: Mapped[str] = mapped_column(String(255), nullable=False)
+    population: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    observed_frequency: Mapped[float] = mapped_column(Float, default=0.5, nullable=False)
+    sample_size: Mapped[int | None] = mapped_column(Integer)
+    rationale: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    source_kb_ids: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+
+class SentimentDrift(Base):
+    __tablename__ = "sentiment_drift"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    scenario_id: Mapped[str | None] = mapped_column(ForeignKey("scenarios.id"))
+    topic: Mapped[str] = mapped_column(String(255), nullable=False)
+    sentiment: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
+    previous_sentiment: Mapped[float | None] = mapped_column(Float)
+    velocity: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
+    evidence_kb_ids: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    measured_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+
+class AssumptionRecord(Base, TimestampMixin):
+    __tablename__ = "assumptions"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    prediction_id: Mapped[str | None] = mapped_column(ForeignKey("scenario_predictions.id"))
+    scenario_id: Mapped[str | None] = mapped_column(ForeignKey("scenarios.id"))
+    statement: Mapped[str] = mapped_column(Text, nullable=False)
+    used_in_scenarios: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    still_valid: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    status: Mapped[str] = mapped_column(String(32), default="valid", nullable=False)
+    last_checked: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    invalidated_by: Mapped[str | None] = mapped_column(ForeignKey("kb_entries.id"))
+
+
+class AdvancedAnalysis(Base):
+    __tablename__ = "advanced_analyses"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    prediction_id: Mapped[str] = mapped_column(ForeignKey("scenario_predictions.id"), nullable=False)
+    scenario_id: Mapped[str | None] = mapped_column(ForeignKey("scenarios.id"))
+    red_team: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    expert_perspectives: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list, nullable=False)
+    uncertainty: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    information_value: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list, nullable=False)
+    cascade_risks: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list, nullable=False)
+    scenario_diff: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
 
 
 class AgentRun(Base):

@@ -41,11 +41,71 @@ class AgentModelConfig(BaseModel):
 
 
 class AgentsConfig(BaseModel):
+    context_gathering_coordinator: AgentModelConfig = Field(
+        default_factory=lambda: AgentModelConfig(model_profile="balanced", temperature=0.1)
+    )
+    query_decomposer: AgentModelConfig = Field(
+        default_factory=lambda: AgentModelConfig(model_profile="fast", temperature=0.1)
+    )
+    information_retriever: AgentModelConfig = Field(
+        default_factory=lambda: AgentModelConfig(model_profile="fast", temperature=0.0)
+    )
+    information_summarizer: AgentModelConfig = Field(
+        default_factory=lambda: AgentModelConfig(model_profile="fast", temperature=0.1)
+    )
+    deduplication_delta_detector: AgentModelConfig = Field(
+        default_factory=lambda: AgentModelConfig(model_profile="fast", temperature=0.0)
+    )
+    kb_writer: AgentModelConfig = Field(
+        default_factory=lambda: AgentModelConfig(model_profile="fast", temperature=0.0)
+    )
     prediction_engine: AgentModelConfig = Field(
         default_factory=lambda: AgentModelConfig(model_profile="balanced", temperature=0.2)
     )
+    extraction_coordinator: AgentModelConfig = Field(
+        default_factory=lambda: AgentModelConfig(model_profile="balanced", temperature=0.1)
+    )
     entity_extractor: AgentModelConfig = Field(
         default_factory=lambda: AgentModelConfig(model_profile="fast", temperature=0.1)
+    )
+    event_extractor: AgentModelConfig = Field(
+        default_factory=lambda: AgentModelConfig(model_profile="fast", temperature=0.1)
+    )
+    topic_theme_extractor: AgentModelConfig = Field(
+        default_factory=lambda: AgentModelConfig(model_profile="fast", temperature=0.1)
+    )
+    node_deduplicator_merger: AgentModelConfig = Field(
+        default_factory=lambda: AgentModelConfig(model_profile="fast", temperature=0.0)
+    )
+    graph_construction_coordinator: AgentModelConfig = Field(
+        default_factory=lambda: AgentModelConfig(model_profile="balanced", temperature=0.1)
+    )
+    pairwise_relationship_detector: AgentModelConfig = Field(
+        default_factory=lambda: AgentModelConfig(model_profile="balanced", temperature=0.1)
+    )
+    graph_consistency_checker: AgentModelConfig = Field(
+        default_factory=lambda: AgentModelConfig(model_profile="balanced", temperature=0.0)
+    )
+    importance_scorer: AgentModelConfig = Field(
+        default_factory=lambda: AgentModelConfig(model_profile="fast", temperature=0.0)
+    )
+    convergence_loop_coordinator: AgentModelConfig = Field(
+        default_factory=lambda: AgentModelConfig(model_profile="balanced", temperature=0.1)
+    )
+    prediction_coordinator: AgentModelConfig = Field(
+        default_factory=lambda: AgentModelConfig(model_profile="reasoning", temperature=0.2)
+    )
+    node_state_predictor: AgentModelConfig = Field(
+        default_factory=lambda: AgentModelConfig(model_profile="fast", temperature=0.1)
+    )
+    graph_traversal_simulator: AgentModelConfig = Field(
+        default_factory=lambda: AgentModelConfig(model_profile="balanced", temperature=0.1)
+    )
+    instability_analyzer: AgentModelConfig = Field(
+        default_factory=lambda: AgentModelConfig(model_profile="reasoning", temperature=0.1)
+    )
+    scenario_synthesizer: AgentModelConfig = Field(
+        default_factory=lambda: AgentModelConfig(model_profile="reasoning", temperature=0.2)
     )
 
 
@@ -72,6 +132,16 @@ class DatabaseConfig(BaseModel):
     echo: bool = False
 
 
+class OpsConfig(BaseModel):
+    structured_logs: bool = True
+    log_level: str = "INFO"
+    api_key_env: str = "SELDON_API_KEY"
+    require_api_key: bool = False
+    allow_localhost_without_api_key: bool = True
+    backup_dir: Path = Path("./data/backups")
+    vector_index_path: Path = Path("./data/vector-index")
+
+
 class SeldonConfig(BaseModel):
     data_dir: Path = Path("./data")
     database: DatabaseConfig = Field(default_factory=DatabaseConfig)
@@ -79,5 +149,6 @@ class SeldonConfig(BaseModel):
     agents: AgentsConfig = Field(default_factory=AgentsConfig)
     predictions: PredictionConfig = Field(default_factory=PredictionConfig)
     knowledge_graph: KnowledgeGraphConfig = Field(default_factory=KnowledgeGraphConfig)
+    ops: OpsConfig = Field(default_factory=OpsConfig)
 
     model_config = {"arbitrary_types_allowed": True}

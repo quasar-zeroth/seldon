@@ -312,6 +312,19 @@ class FeedbackEntryRead(FeedbackEntryCreate):
     recorded_at: datetime
 
 
+class OutcomeCheckRead(BaseModel):
+    id: str
+    prediction_id: str
+    scenario_id: str | None = None
+    actual_outcome: str
+    resolved_outcome_key: str
+    probability_assigned: float
+    resolution_confidence: float
+    source_references: list[str] = Field(default_factory=list)
+    notes: str = ""
+    checked_at: datetime
+
+
 class FeedbackEntryUpdate(BaseModel):
     actual_outcome: str | None = None
     comparison: str | None = None
