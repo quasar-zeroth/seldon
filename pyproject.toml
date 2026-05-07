@@ -22,6 +22,11 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["src/seldon"]
 
+[tool.pytest.ini_options]
+markers = [
+    "live_openrouter: tests that call the real OpenRouter API and require OPENROUTER_API_KEY",
+]
+
 [dependency-groups]
 dev = [
     "pytest>=8.0.0",

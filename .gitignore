@@ -19,6 +19,9 @@ dist/
 
 # Local runtime data
 /data/
+.env
+.env.*
+!.env.example
 
 # Frontend
 node_modules/

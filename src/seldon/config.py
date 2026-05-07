@@ -17,11 +17,11 @@ class OpenRouterConfig(BaseModel):
     app_name: str = "The Seldon Project"
     site_url: str | None = None
     timeout_seconds: float = 90
-    default_model: str = "anthropic/claude-sonnet-4.5"
-    fast_model: str = "anthropic/claude-haiku-4.5"
-    reasoning_model: str = "openai/gpt-5.1"
+    default_model: str = "tencent/hy3-preview:free"
+    fast_model: str = "tencent/hy3-preview:free"
+    reasoning_model: str = "tencent/hy3-preview:free"
     embedding_model: str = "text-embedding-3-small"
-    fallback_models: list[str] = Field(default_factory=list)
+    fallback_models: list[str] = Field(default_factory=lambda: ["openrouter/owl-alpha", "minimax/minimax-m2.5:free", "nvidia/nemotron-3-super-120b-a12b:free"])
 
     def model_for_profile(self, profile: str) -> str:
         if profile == "fast":
