@@ -661,6 +661,123 @@ Frontend tasks:
 - Responsive graph explorer.
 - Export/download buttons for scenario reports.
 
+## Follow-up A — Detailed Verification Misses
+
+This verification pass reviewed `implementation-plan.md`, `prediction-system-plan.md`, the committed Phase A-K code, tests, API, persistence layer, agents, frontend, and production files. The current implementation is a strong end-to-end skeleton: DB-backed scenarios/KB/ERG/predictions exist, Phase E-J coordinators run, FastAPI routes expose the core workflow, the Next.js console builds, and Phase K ops basics are present. The items below are the remaining gaps or partial implementations against the plan.
+
+### A.1 Repository shape and platform foundations
+
+- **Missing package directories from target shape:** `src/seldon/core`, `src/seldon/kb`, `src/seldon/runs`, `src/seldon/feedback`, and `src/seldon/cli` were not created as first-class packages. Their responsibilities are currently folded into `data`, `agents`, `api`, and `ops`.
+- **PostgreSQL/pgvector is not actually implemented:** the app can use SQLAlchemy URLs and ships Postgres in compose, but there is no pgvector schema, extension setup, vector repository, or production vector search backend.
+- **NetworkX graph adapter is still missing:** the legacy NetworkX code remains, but there is no DB-to-NetworkX graph view/adapter for traversal algorithms.
+- **Message bus remains implicit only:** agent messages are modeled, but coordinator/specialist communication is still direct function calls; there is no structured internal message flow beyond persisted `AgentRun` input/output.
+- **CLI operations are not implemented:** no Typer/local CLI exists for scenarios, jobs, backups, seed data, or local operations.
+
+### A.2 OpenRouter/model foundation gaps
+
+- **Live agent flows do not actually call OpenRouter for Phase E-J reasoning:** most agents are deterministic heuristics and do not invoke `llm_client.complete_json`, so model profiles exist but are not exercised in the main workflow.
+- **Per-agent model configuration is not wired into `AgentBase`:** `AgentsConfig` declares overrides, but `AgentBase` and specialists do not resolve agent-specific temperature/max token/model overrides when calling the LLM.
+- **Relational model invocation capture is not wired to live API runs:** `DatabaseModelInvocationRecorder` exists, but `create_app()` constructs `OpenRouterClient(app_config.llm)` without a DB recorder, and recorder rows do not attach `agent_run_id` automatically.
+- **Structured validation retries are incomplete:** malformed JSON extraction and fallback-model retries exist, but there is no explicit validation-repair retry loop that re-prompts the model with schema errors.
+- **Provider/cost metadata is only pass-through:** invocation metadata stores fields when returned, but no cost estimator or provider normalization layer was implemented.
+- **Escalation rules are not implemented:** confidence/complexity-based escalation from fast to balanced/reasoning models is not applied in agents.
+
+### A.3 Persistence/API gaps
+
+- **CRUD coverage is incomplete for several tables:** schemas exist for many entities, but API routes are missing for sources, KB versions, contradictions, graph snapshots/diffs/reuse candidates, scenario versions, scenario evidence links, feedback entries, agent messages, model invocations, and audit log browsing.
+- **KB search API exposes only a subset of repository filters:** `/kb/search` supports query/topic/entity/scenario/current-only, but not temporal filters, updated-since, sentiment/perspective filters, confidence filters, decay scoring, confidence aggregation, or semantic/vector search mode.
+- **Config model patching is in-memory only:** `PATCH /config/models` mutates the running config object but does not persist overrides to TOML/env/config files and has no safety/validation policy beyond raw assignment.
+- **SSE/live update routes are not implemented:** `/events/runs` and `/events/scenarios/{id}` remain deferred.
+- **Run retry is a stub:** `/runs/{id}/retry` creates a pending run record but does not re-dispatch the original agent/coordinator.
+- **Background jobs are limited to manual in-process queue actions:** backup and seed jobs work, but phase runs are still synchronous request handlers rather than queued jobs with progress polling.
+
+### A.4 Phase E — Context gathering misses
+
+- **External retrieval is not implemented:** `InformationRetriever` searches only the existing KB and falls back to the scenario brief; it does not run web/news/API/forum searches, fetch documents, or perform 2-3 search variations per subquery.
+- **No raw document ingestion pipeline:** there is no fetch/boilerplate stripping/relevance filtering layer for retrieved external documents.
+- **Summarization is heuristic:** `InformationSummarizer` truncates/source-copies one retrieved source rather than extracting discrete factual claims from long documents with temporal, entity, sentiment, surprise, and contradiction tags.
+- **Dedup/delta detection is basic:** it uses normalized text/source/topic checks rather than embeddings, semantic thresholds, update-vs-new decisions, or contradiction detection/resolution.
+- **Coordinator loop is single-pass:** no coverage scoring, gap detection, new subquery generation, max rounds, or diminishing-return loop is implemented inside context gathering.
+- **Embeddings/vector index writes are absent:** `KBWriter` does not compute embeddings or update a vector index.
+
+### A.5 Phase F — Extraction misses
+
+- **Extraction is heuristic, not LLM/schema-prompt based:** entity/event/topic extraction uses compact term rules and hints instead of model-backed extraction over KB batches.
+- **Completeness check is missing:** `ExtractionCoordinator` does not ask whether obvious important entities/events/topics are missing and does not route targeted gaps back to Phase E.
+- **Merge review is proposal-only and exact-match based:** no fuzzy semantic merge, ambiguous merge escalation, alias table, or durable alias preservation beyond proposal fields exists.
+- **Destructive merge workflow is not implemented:** there is no UI/API action to approve merges and rewrite node references safely.
+
+### A.6 Phase G — Relationship graph construction misses
+
+- **Relationship detection is heuristic, not model-backed:** `PairwiseRelationshipDetector` infers relationship type from keywords rather than asking a bounded LLM relationship detector for concrete mechanisms.
+- **Candidate generation is narrower than planned:** it uses shared/co-occurring evidence only; there is no first-pass plausible relationship classifier, cluster pruning, or missing-obvious-relationship suggestion pass.
+- **Consistency checking is partial:** duplicate, unsupported, stale marker, and some reverse contradictions are checked; orphan nodes, disconnected subgraphs, overly dense clusters, and missing obvious relationships are not.
+- **Importance scoring lacks graph centrality/PageRank:** it uses degree/evidence/scenario usage heuristics, not NetworkX/PageRank-style centrality.
+- **Convergence loop ignores coverage target and gap semantics:** `coverage_target` is accepted but unused, contradictions resolved are not tracked, and the loop does not detect new implied nodes/subqueries beyond marginal counts.
+
+### A.7 Phase H — Prediction engine misses
+
+- **Node predictions are simplified:** `NodeStatePredictor` emits one direction/forecast per node, not 2-5 possible state changes with probabilities and reasoning per node.
+- **Traversal simulation is shallow:** `GraphTraversalSimulator` inspects immediate edges touching forecast nodes; it does not perform DFS/BFS cascades from starting conditions, cumulative probability propagation, independence adjustments, convergence detection, or path instability loops.
+- **Instability analysis is heuristic:** it flags low stability/evidence and strong low-confidence edges, but does not deeply analyze feedback-loop contradictions or propose graph corrections.
+- **Scenario synthesis is fixed bull/base/bear:** it does not cluster traversal results into 3-7 arbitrary coherent scenarios ranked by probability/impact.
+- **Prediction activation/red-team gate is incomplete:** red-team review exists in Phase J as a separate endpoint, but it is not run before activation in `PredictionCoordinator`.
+- **Base rates are not integrated before prediction:** Phase J stores base-rate evidence after a prediction, but node state/synthesis does not consume base-rate priors.
+
+### A.8 Phase I — Feedback and learning misses
+
+- **Outcome monitoring is manual only:** feedback requires supplied actual outcome; it does not search external ground truth or run on a schedule for active scenarios.
+- **Graph corrections are stored but not applied:** feedback records `graph_corrections`, but no add/modify/remove node/edge actions are executed.
+- **Failed assumptions and superseded facts are not marked in core stores:** root cause diagnostics record failed assumptions, but assumption records/KB supersession are not updated automatically.
+- **Calibration is basic:** Brier/log/buckets are computed, but per-agent/per-model metrics are mostly run/invocation counts rather than calibrated forecast accuracy by agent/model/profile.
+- **Re-prediction trigger is missing:** feedback does not decide whether new evidence/corrections require a fresh scenario prediction.
+
+### A.9 Phase J advanced intelligence misses
+
+- **Advanced agents are mostly heuristic placeholders:** red-team, analogies, base rates, sentiment drift, expert perspectives, value of information, and cascade risk are deterministic approximations rather than model-backed or data-backed analyses.
+- **Cross-scenario intelligence from the system plan is missing:** no Shared Graph Manager or Cross-Scenario Correlation Detector exists to propose starter graphs, flag shared dependency changes, detect contradictory predictions, or find scenario synergies.
+- **Assumption registry is on-demand only:** there is no periodic assumption validity checker or automatic dependent-scenario flagging.
+- **Historical/base-rate evidence lacks external datasets:** analogies and base rates are derived from existing KB/prediction probabilities, not historical series or comparable external data.
+
+### A.10 Frontend misses
+
+- **Only a single Mission Control page exists:** there are no dedicated Scenario Detail, KB Explorer, Graph Explorer, Agent Runs Console, Calibration/Feedback, or Settings pages.
+- **Most frontend controls are read-only mock panels:** run buttons, merge approval, edge confidence/strength editing, scenario creation, feedback resolution, and settings persistence are not implemented.
+- **Graph visualization library is not integrated:** the graph explorer is list-based, not React Flow/Sigma with relationship filters, overlays, neighborhood expansion, or responsive interactive graph controls.
+- **Charts are not implemented:** probability history, calibration curves, confidence charts, uncertainty, sentiment drift, and cascade-risk visualizations are not present.
+- **Frontend has no mutation flows:** API client reads data but does not expose UI workflows for creating scenarios, running phases, retrying runs, resolving predictions, or downloading backend-generated exports beyond a client-side markdown report.
+
+### A.11 Phase K production/ops misses
+
+- **Auth is minimal:** API-key middleware exists, but no user/session model, role policy, secrets guidance, or production auth integration exists.
+- **Backups are DB-focused:** vector index backup is configured but only included when present; there is no restore workflow, retention policy, or scheduled backup job.
+- **Docker compose is basic:** it starts API/web/Postgres but does not run migrations, configure pgvector, provide healthcheck-gated dependencies, or include production secrets handling.
+- **CI is broad but not complete production hardening:** it runs lint/typecheck/tests/build, but no Docker build smoke, migration upgrade/downgrade check, security scan, or coverage gate is included.
+- **Responsive graph explorer/export buttons are partial:** empty/loading/error states and a report download exist, but responsive interactive graph and backend scenario report export/download endpoints remain missing.
+
+### A.12 Test coverage misses
+
+- **Tests mostly validate deterministic skeleton behavior:** there are good unit/API/build checks, but not full model-backed agent contracts, external retrieval, vector search, graph traversal depth, red-team activation gates, correction application, or cross-scenario intelligence.
+- **No end-to-end external-data workflow test:** there is no test that creates a scenario, retrieves external sources, writes KB entries with embeddings, extracts nodes, builds relationships, predicts, red-teams, resolves, calibrates, and re-predicts.
+- **No frontend interaction tests:** there are no Playwright/React tests for dashboard workflows, error states, run buttons, merge approval, or feedback resolution.
+
+### A.13 Implementation progress from Follow-up A batch 1
+
+Implemented in the first follow-up batch:
+
+- Added a first-class `seldon.kb` package with deterministic local embeddings and cosine ranking as a SQLite-friendly vector-search seam.
+- Auto-populated KB `content_embedding`, `embedding_metadata`, and `vector_index_pointer` on create/update when embeddings are not supplied.
+- Expanded API coverage for sources, KB versions/supersession/contradictions, graph node/edge updates, graph snapshots/diffs/reuse candidates, prediction CRUD/version/evidence links, run messages, model invocations, audit log browsing, feedback entries, historical analogies, base rates, and sentiment drift.
+- Added queued phase execution via `/scenarios/{scenario_id}/jobs/{phase}` and registered a generic `phase` background job handler for context gathering, extraction, graph construction, and prediction.
+- Improved `/runs/{run_id}/retry` so coordinator runs can be re-dispatched as phase jobs when the original scenario is known.
+- Expanded KB search API with updated/valid-time filters, sentiment/confidence filters, semantic mode, and optional decay/confidence score metadata.
+- Allowed context gathering requests to include explicit external documents, which are folded into retrieval results and written through the normal KB pipeline.
+- Applied supported feedback graph corrections (`add_node`, `add_edge`, `modify_node`, `modify_edge`) instead of only storing them.
+- Marked matching assumption records invalid when feedback flags failed assumptions.
+- Added frontend API mutation helpers plus Mission Control forms for scenario creation, queued phase runs, and run retry.
+
+Still remaining after batch 1: true external web/news retrieval, production pgvector, model-backed E-J agents, full LLM invocation recorder binding, deep graph traversal, red-team pre-activation gating, cross-scenario intelligence agents, dedicated frontend pages/interactive graph/charts, restore/retention ops, and end-to-end/browser tests.
+
 ## 8. Initial Milestones
 
 ### Milestone 1 — Clean Seldon package

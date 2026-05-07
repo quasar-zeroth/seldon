@@ -19,17 +19,50 @@ from pydantic import BaseModel, Field
 from seldon.agents import AdvancedIntelligenceCoordinator, AdvancedIntelligenceInput, ContextGatheringCoordinator, ConvergenceLoopCoordinator, ConvergenceLoopInput, ExtractionCoordinator, FeedbackCoordinator, FeedbackInput, GraphConstructionCoordinator, PredictionCoordinator, compute_calibration_summary
 from seldon.config import SeldonConfig
 from seldon.data.database import create_all, make_engine, make_session_factory
-from seldon.data.models import AdvancedAnalysis, AgentRun, ERGNode, KBEntry, ModelInvocation, OutcomeCheck, Scenario, ScenarioPrediction
-from seldon.data.repositories import AgentRunRepository, GraphRepository, KBRepository, ScenarioRepository, row_to_dict
+from seldon.data.models import (
+    AdvancedAnalysis,
+    AgentMessage,
+    AgentRun,
+    AuditLog,
+    BaseRateEvidence,
+    ERGEdge,
+    ERGNode,
+    FeedbackEntry,
+    GraphSnapshot,
+    HistoricalAnalogy,
+    KBEntry,
+    KBEntryContradiction,
+    KBEntryVersion,
+    ModelInvocation,
+    OutcomeCheck,
+    Scenario,
+    ScenarioEvidenceLink,
+    ScenarioPrediction,
+    ScenarioVersion,
+    SentimentDrift,
+    Source,
+)
+from seldon.data.repositories import AgentRunRepository, GraphRepository, KBRepository, ScenarioRepository, SourceRepository, row_to_dict
 from seldon.data.schemas import (
+    AgentMessageCreate,
     AgentRunCreate,
     AgentRunUpdate,
     ERGEdgeCreate,
+    ERGEdgeUpdate,
     ERGNodeCreate,
+    ERGNodeUpdate,
+    KBEntryContradictionCreate,
+    KBEntryContradictionUpdate,
     KBEntryCreate,
     KBEntryUpdate,
+    ModelInvocationCreate,
     ScenarioCreate,
+    ScenarioEvidenceLinkCreate,
+    ScenarioPredictionCreate,
+    ScenarioPredictionUpdate,
     ScenarioUpdate,
+    SourceCreate,
+    SourceUpdate,
 )
 from seldon.llm.openrouter import OpenRouterClient
 from seldon.ops import InProcessJobQueue, configure_structured_logging, create_backup, seed_demo_data
@@ -42,6 +75,7 @@ class ContextGatheringRequest(BaseModel):
     depth: str = "standard"
     source_policy: str = "kb_first"
     max_subqueries: int = Field(default=8, ge=1, le=20)
+    external_documents: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class ExtractionRequest(BaseModel):
@@ -146,8 +180,47 @@ def create_app(
         finally:
             session.close()
 
+    def phase_job(payload: dict[str, Any]) -> dict[str, Any]:
+        assert session_factory is not None
+        scenario_id = payload.get("scenario_id")
+        phase = payload.get("phase")
+        if not isinstance(scenario_id, str) or not isinstance(phase, str):
+            raise ValueError("phase jobs require scenario_id and phase")
+        session = session_factory()
+        try:
+            with session.begin():
+                scenario = session.get(Scenario, scenario_id)
+                if scenario is None:
+                    raise KeyError(f"scenario not found: {scenario_id}")
+                if phase == "context_gathering":
+                    request = ContextGatheringRequest(**payload.get("request", {}))
+                    agent_input = ContextGatheringCoordinator.input_from_scenario(scenario, depth=request.depth, source_policy=request.source_policy, max_subqueries=request.max_subqueries, external_documents=request.external_documents)
+                    run_id, output = ContextGatheringCoordinator(session, config=app_config, llm_client=app_llm_client).run(agent_input)
+                elif phase == "extraction":
+                    request = ExtractionRequest(**payload.get("request", {}))
+                    agent_input = ExtractionCoordinator.input_from_scenario(scenario, max_kb_entries=request.max_kb_entries, max_nodes=request.max_nodes)
+                    run_id, output = ExtractionCoordinator(session, config=app_config, llm_client=app_llm_client).run(agent_input)
+                elif phase == "graph_construction":
+                    request = GraphConstructionRequest(**payload.get("request", {}))
+                    if request.run_convergence_loop:
+                        agent_input = ConvergenceLoopInput(scenario_id=scenario_id, max_iterations=request.max_iterations, min_new_info_threshold=request.min_new_info_threshold, coverage_target=request.coverage_target, max_candidate_pairs=request.max_candidate_pairs)
+                        run_id, output = ConvergenceLoopCoordinator(session, config=app_config, llm_client=app_llm_client).run(agent_input)
+                    else:
+                        agent_input = GraphConstructionCoordinator.input_from_scenario(scenario, max_candidate_pairs=request.max_candidate_pairs, min_confidence_to_write=request.min_confidence_to_write)
+                        run_id, output = GraphConstructionCoordinator(session, config=app_config, llm_client=app_llm_client).run(agent_input)
+                elif phase == "prediction":
+                    request = PredictionRequest(**payload.get("request", {}))
+                    agent_input = PredictionCoordinator.input_from_scenario(scenario, max_driver_nodes=request.max_driver_nodes, min_confidence_to_activate=request.min_confidence_to_activate, export_markdown=request.export_markdown)
+                    run_id, output = PredictionCoordinator(session, config=app_config, llm_client=app_llm_client).run(agent_input)
+                else:
+                    raise ValueError(f"unsupported phase job: {phase}")
+                return {"agent_run_id": run_id, "phase": phase, "output": output.model_dump(mode="json")}
+        finally:
+            session.close()
+
     app_job_queue.register("backup", backup_job)
     app_job_queue.register("seed_demo", seed_job)
+    app_job_queue.register("phase", phase_job)
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
@@ -240,6 +313,35 @@ def create_app(
             cfg.llm.fallback_models = list(patch["fallback_models"])
         return model_config(cfg)
 
+    @app.post("/sources", status_code=201)
+    def create_source(payload: SourceCreate, db: Session = Depends(get_session_dep)) -> dict[str, Any]:
+        values = _values(payload)
+        if "metadata" in values:
+            values["metadata_"] = values.pop("metadata")
+        with db.begin():
+            row = SourceRepository(db).create(**values)
+        return _row(row)
+
+    @app.get("/sources")
+    def list_sources(limit: int = Query(100, ge=1, le=500), offset: int = Query(0, ge=0), db: Session = Depends(get_session_dep)) -> list[dict[str, Any]]:
+        return _rows(list(db.scalars(select(Source).order_by(Source.updated_at.desc()).offset(offset).limit(limit))))
+
+    @app.get("/sources/{source_id}")
+    def get_source(source_id: str, db: Session = Depends(get_session_dep)) -> dict[str, Any]:
+        row = db.get(Source, source_id)
+        if row is None:
+            raise not_found("source", source_id)
+        return _row(row)
+
+    @app.patch("/sources/{source_id}")
+    def update_source(source_id: str, payload: SourceUpdate, db: Session = Depends(get_session_dep)) -> dict[str, Any]:
+        values = _values(payload)
+        if "metadata" in values:
+            values["metadata_"] = values.pop("metadata")
+        with db.begin():
+            row = SourceRepository(db).update(source_id, **values)
+        return _row(row)
+
     @app.post("/scenarios", status_code=201)
     def create_scenario(payload: ScenarioCreate, db: Session = Depends(get_session_dep)) -> dict[str, Any]:
         with db.begin():
@@ -256,6 +358,15 @@ def create_app(
         if row is None:
             raise not_found("scenario", scenario_id)
         return _row(row)
+
+    @app.post("/scenarios/{scenario_id}/jobs/{phase}", status_code=202)
+    def enqueue_phase_job(scenario_id: str, phase: str, payload: dict[str, Any] | None = None, db: Session = Depends(get_session_dep)) -> dict[str, Any]:
+        if db.get(Scenario, scenario_id) is None:
+            raise not_found("scenario", scenario_id)
+        if phase not in {"context_gathering", "extraction", "graph_construction", "prediction"}:
+            raise HTTPException(status_code=422, detail={"code": "validation_error", "message": f"unsupported phase: {phase}"})
+        job = app_job_queue.enqueue("phase", {"scenario_id": scenario_id, "phase": phase, "request": payload or {}})
+        return job.to_dict()
 
     @app.patch("/scenarios/{scenario_id}")
     def update_scenario(scenario_id: str, payload: ScenarioUpdate, db: Session = Depends(get_session_dep)) -> dict[str, Any]:
@@ -296,6 +407,7 @@ def create_app(
                 depth=request.depth,
                 source_policy=request.source_policy,
                 max_subqueries=request.max_subqueries,
+                external_documents=request.external_documents,
             )
             run_id, output = ContextGatheringCoordinator(db, config=cfg, llm_client=llm).run(agent_input)
             row = db.get(AgentRun, run_id)
@@ -448,9 +560,29 @@ def create_app(
         entity: str | None = None,
         scenario_id: str | None = None,
         current_only: bool = False,
+        updated_since: str | None = None,
+        valid_at: str | None = None,
+        min_sentiment: float | None = Query(default=None, ge=-1.0, le=1.0),
+        max_sentiment: float | None = Query(default=None, ge=-1.0, le=1.0),
+        min_confidence: float | None = Query(default=None, ge=0.0, le=1.0),
+        semantic: bool = False,
+        include_scores: bool = False,
         db: Session = Depends(get_session_dep),
     ) -> list[dict[str, Any]]:
-        return _rows(KBRepository(db).search(q, topic=topic, entity=entity, scenario_id=scenario_id, current_only=current_only))
+        from datetime import datetime
+
+        repo = KBRepository(db)
+        updated_dt = datetime.fromisoformat(updated_since) if updated_since else None
+        valid_dt = datetime.fromisoformat(valid_at) if valid_at else None
+        rows = repo.semantic_search(q or "", limit=100) if semantic and q else repo.search(q, topic=topic, entity=entity, scenario_id=scenario_id, updated_since=updated_dt, valid_at=valid_dt, current_only=current_only, min_sentiment=min_sentiment, max_sentiment=max_sentiment, min_confidence=min_confidence)
+        data = _rows(rows)
+        if include_scores:
+            decay = repo.decay_scores(rows)
+            confidence = repo.confidence_summary(rows)
+            for item in data:
+                item["decay_score"] = decay.get(item["id"], 0.0)
+                item["confidence_summary"] = confidence
+        return data
 
     @app.get("/kb/entries/{entry_id}")
     def get_kb_entry(entry_id: str, db: Session = Depends(get_session_dep)) -> dict[str, Any]:
@@ -463,6 +595,48 @@ def create_app(
     def update_kb_entry(entry_id: str, payload: KBEntryUpdate, db: Session = Depends(get_session_dep)) -> dict[str, Any]:
         with db.begin():
             row = KBRepository(db).update_entry(entry_id, **_values(payload))
+        return _row(row)
+
+    @app.get("/kb/entries/{entry_id}/versions")
+    def list_kb_versions(entry_id: str, db: Session = Depends(get_session_dep)) -> list[dict[str, Any]]:
+        if db.get(KBEntry, entry_id) is None:
+            raise not_found("kb_entry", entry_id)
+        return _rows(list(db.scalars(select(KBEntryVersion).where(KBEntryVersion.kb_entry_id == entry_id).order_by(KBEntryVersion.version))))
+
+    @app.post("/kb/entries/{entry_id}/supersede/{new_entry_id}")
+    def supersede_kb_entry(entry_id: str, new_entry_id: str, db: Session = Depends(get_session_dep)) -> dict[str, Any]:
+        with db.begin():
+            if db.get(KBEntry, new_entry_id) is None:
+                raise not_found("kb_entry", new_entry_id)
+            row = KBRepository(db).supersede(entry_id, new_entry_id)
+        return _row(row)
+
+    @app.post("/kb/contradictions", status_code=201)
+    def create_kb_contradiction(payload: KBEntryContradictionCreate, db: Session = Depends(get_session_dep)) -> dict[str, Any]:
+        with db.begin():
+            row = KBRepository(db).add_contradiction(payload.kb_entry_id, payload.contradicts_kb_entry_id, payload.description)
+            row.status = payload.status
+        return _row(row)
+
+    @app.get("/kb/contradictions")
+    def list_kb_contradictions(status_filter: str | None = Query(default=None, alias="status"), db: Session = Depends(get_session_dep)) -> list[dict[str, Any]]:
+        stmt = select(KBEntryContradiction).order_by(KBEntryContradiction.created_at.desc())
+        if status_filter:
+            stmt = stmt.where(KBEntryContradiction.status == status_filter)
+        return _rows(list(db.scalars(stmt)))
+
+    @app.patch("/kb/contradictions/{contradiction_id}")
+    def update_kb_contradiction(contradiction_id: str, payload: KBEntryContradictionUpdate, db: Session = Depends(get_session_dep)) -> dict[str, Any]:
+        values = _values(payload)
+        with db.begin():
+            row = db.get(KBEntryContradiction, contradiction_id)
+            if row is None:
+                raise not_found("kb_entry_contradiction", contradiction_id)
+            before = row_to_dict(row)
+            for key, value in values.items():
+                setattr(row, key, value)
+            db.flush()
+            KBRepository(db).audit.emit("kb_entry_contradiction", contradiction_id, "update", before=before, after=row_to_dict(row))
         return _row(row)
 
     @app.post("/graph/nodes", status_code=201)
@@ -482,6 +656,12 @@ def create_app(
             raise not_found("erg_node", node_id)
         return _row(row)
 
+    @app.patch("/graph/nodes/{node_id}")
+    def update_graph_node(node_id: str, payload: ERGNodeUpdate, db: Session = Depends(get_session_dep)) -> dict[str, Any]:
+        with db.begin():
+            row = GraphRepository(db).update_node(node_id, **_values(payload))
+        return _row(row)
+
     @app.post("/graph/edges", status_code=201)
     def create_graph_edge(payload: ERGEdgeCreate, db: Session = Depends(get_session_dep)) -> dict[str, Any]:
         with db.begin():
@@ -491,6 +671,19 @@ def create_app(
     @app.get("/graph/edges")
     def list_graph_edges(node_id: str | None = None, db: Session = Depends(get_session_dep)) -> list[dict[str, Any]]:
         return _rows(GraphRepository(db).list_edges(node_id=node_id))
+
+    @app.get("/graph/edges/{edge_id}")
+    def get_graph_edge(edge_id: str, db: Session = Depends(get_session_dep)) -> dict[str, Any]:
+        row = db.get(ERGEdge, edge_id)
+        if row is None:
+            raise not_found("erg_edge", edge_id)
+        return _row(row)
+
+    @app.patch("/graph/edges/{edge_id}")
+    def update_graph_edge(edge_id: str, payload: ERGEdgeUpdate, db: Session = Depends(get_session_dep)) -> dict[str, Any]:
+        with db.begin():
+            row = GraphRepository(db).update_edge(edge_id, **_values(payload))
+        return _row(row)
 
     @app.get("/graph/neighborhood/{node_id}")
     def graph_neighborhood(node_id: str, db: Session = Depends(get_session_dep)) -> dict[str, Any]:
@@ -502,6 +695,44 @@ def create_app(
         neighbor_ids = {e.source_node_id for e in edges} | {e.target_node_id for e in edges}
         nodes = [db.get(ERGNode, id) for id in neighbor_ids]
         return {"center": _row(node), "nodes": _rows([n for n in nodes if n is not None]), "edges": _rows(edges)}
+
+    @app.post("/graph/snapshots", status_code=201)
+    def create_graph_snapshot(payload: dict[str, Any] | None = None, db: Session = Depends(get_session_dep)) -> dict[str, Any]:
+        payload = payload or {}
+        with db.begin():
+            row = GraphRepository(db).create_snapshot(scenario_id=payload.get("scenario_id"), reason=payload.get("reason"), agent_id=payload.get("agent_id"))
+        return _row(row)
+
+    @app.get("/graph/snapshots")
+    def list_graph_snapshots(scenario_id: str | None = None, db: Session = Depends(get_session_dep)) -> list[dict[str, Any]]:
+        stmt = select(GraphSnapshot).order_by(GraphSnapshot.created_at.desc())
+        if scenario_id:
+            stmt = stmt.where(GraphSnapshot.scenario_id == scenario_id)
+        return _rows(list(db.scalars(stmt)))
+
+    @app.get("/graph/snapshots/{snapshot_id}")
+    def get_graph_snapshot(snapshot_id: str, db: Session = Depends(get_session_dep)) -> dict[str, Any]:
+        row = db.get(GraphSnapshot, snapshot_id)
+        if row is None:
+            raise not_found("graph_snapshot", snapshot_id)
+        return _row(row)
+
+    @app.get("/graph/snapshots/{older_id}/diff/{newer_id}")
+    def diff_graph_snapshots(older_id: str, newer_id: str, db: Session = Depends(get_session_dep)) -> dict[str, Any]:
+        older = db.get(GraphSnapshot, older_id)
+        newer = db.get(GraphSnapshot, newer_id)
+        if older is None:
+            raise not_found("graph_snapshot", older_id)
+        if newer is None:
+            raise not_found("graph_snapshot", newer_id)
+        return GraphRepository(db).diff_snapshots(older, newer)
+
+    @app.get("/graph/reuse-candidates/{scenario_id}")
+    def graph_reuse_candidates(scenario_id: str, q: str | None = None, db: Session = Depends(get_session_dep)) -> dict[str, Any]:
+        if db.get(Scenario, scenario_id) is None:
+            raise not_found("scenario", scenario_id)
+        result = GraphRepository(db).reuse_candidates(scenario_id, query=q)
+        return {"nodes": _rows(result["nodes"]), "edges": _rows(result["edges"])}
 
     @app.post("/runs", status_code=201)
     def create_run(payload: AgentRunCreate, db: Session = Depends(get_session_dep)) -> dict[str, Any]:
@@ -524,6 +755,12 @@ def create_app(
             rows.append(data)
         return rows
 
+    @app.post("/predictions", status_code=201)
+    def create_prediction(payload: ScenarioPredictionCreate, db: Session = Depends(get_session_dep)) -> dict[str, Any]:
+        with db.begin():
+            row = ScenarioRepository(db).create_prediction(**_values(payload))
+        return _row(row)
+
     @app.get("/predictions")
     def list_predictions(scenario_id: str | None = None, db: Session = Depends(get_session_dep)) -> list[dict[str, Any]]:
         stmt = select(ScenarioPrediction).order_by(ScenarioPrediction.updated_at.desc())
@@ -537,6 +774,39 @@ def create_app(
         if row is None:
             raise not_found("scenario_prediction", prediction_id)
         return _row(row)
+
+    @app.patch("/predictions/{prediction_id}")
+    def update_prediction(prediction_id: str, payload: ScenarioPredictionUpdate, db: Session = Depends(get_session_dep)) -> dict[str, Any]:
+        with db.begin():
+            row = ScenarioRepository(db).update_prediction(prediction_id, **_values(payload))
+        return _row(row)
+
+    @app.get("/predictions/{prediction_id}/versions")
+    def list_prediction_versions(prediction_id: str, db: Session = Depends(get_session_dep)) -> list[dict[str, Any]]:
+        if db.get(ScenarioPrediction, prediction_id) is None:
+            raise not_found("scenario_prediction", prediction_id)
+        return _rows(list(db.scalars(select(ScenarioVersion).where(ScenarioVersion.scenario_prediction_id == prediction_id).order_by(ScenarioVersion.version))))
+
+    @app.post("/predictions/{prediction_id}/evidence", status_code=201)
+    def create_prediction_evidence(prediction_id: str, payload: ScenarioEvidenceLinkCreate, db: Session = Depends(get_session_dep)) -> dict[str, Any]:
+        if payload.scenario_prediction_id != prediction_id:
+            raise HTTPException(status_code=400, detail={"code": "prediction_mismatch", "message": "payload scenario_prediction_id must match URL"})
+        with db.begin():
+            if db.get(ScenarioPrediction, prediction_id) is None:
+                raise not_found("scenario_prediction", prediction_id)
+            if db.get(KBEntry, payload.kb_entry_id) is None:
+                raise not_found("kb_entry", payload.kb_entry_id)
+            row = ScenarioEvidenceLink(**_values(payload))
+            db.add(row)
+            db.flush()
+            ScenarioRepository(db).audit.emit("scenario_evidence_link", row.id, "create", after=row_to_dict(row))
+        return _row(row)
+
+    @app.get("/predictions/{prediction_id}/evidence")
+    def list_prediction_evidence(prediction_id: str, db: Session = Depends(get_session_dep)) -> list[dict[str, Any]]:
+        if db.get(ScenarioPrediction, prediction_id) is None:
+            raise not_found("scenario_prediction", prediction_id)
+        return _rows(list(db.scalars(select(ScenarioEvidenceLink).where(ScenarioEvidenceLink.scenario_prediction_id == prediction_id))))
 
     @app.get("/runs/{run_id}")
     def get_run(run_id: str, db: Session = Depends(get_session_dep)) -> dict[str, Any]:
@@ -553,14 +823,68 @@ def create_app(
             row = AgentRunRepository(db).update(run_id, **_values(payload))
         return _row(row)
 
+    @app.post("/runs/{run_id}/messages", status_code=201)
+    def add_run_message(run_id: str, payload: AgentMessageCreate, db: Session = Depends(get_session_dep)) -> dict[str, Any]:
+        if payload.agent_run_id != run_id:
+            raise HTTPException(status_code=400, detail={"code": "run_mismatch", "message": "payload agent_run_id must match URL"})
+        with db.begin():
+            if db.get(AgentRun, run_id) is None:
+                raise not_found("agent_run", run_id)
+            row = AgentRunRepository(db).add_message(run_id, payload.role, payload.content, payload.payload)
+        return _row(row)
+
+    @app.get("/runs/{run_id}/messages")
+    def list_run_messages(run_id: str, db: Session = Depends(get_session_dep)) -> list[dict[str, Any]]:
+        if db.get(AgentRun, run_id) is None:
+            raise not_found("agent_run", run_id)
+        return _rows(list(db.scalars(select(AgentMessage).where(AgentMessage.agent_run_id == run_id).order_by(AgentMessage.created_at))))
+
+    @app.post("/runs/{run_id}/model-invocations", status_code=201)
+    def add_run_model_invocation(run_id: str, payload: ModelInvocationCreate, db: Session = Depends(get_session_dep)) -> dict[str, Any]:
+        values = _values(payload)
+        values["agent_run_id"] = run_id
+        with db.begin():
+            if db.get(AgentRun, run_id) is None:
+                raise not_found("agent_run", run_id)
+            row = AgentRunRepository(db).record_invocation(**values)
+        return _row(row)
+
     @app.post("/runs/{run_id}/retry", status_code=202)
     def retry_run(run_id: str, db: Session = Depends(get_session_dep)) -> dict[str, Any]:
+        old = db.get(AgentRun, run_id)
+        if old is None:
+            raise not_found("agent_run", run_id)
+        scenario_id = (old.input or {}).get("scenario_id") or (old.input or {}).get("payload", {}).get("scenario_id")
+        phase_map = {
+            "context_gathering_coordinator": "context_gathering",
+            "extraction_coordinator": "extraction",
+            "graph_construction_coordinator": "graph_construction",
+            "convergence_loop_coordinator": "graph_construction",
+            "prediction_coordinator": "prediction",
+        }
+        phase = phase_map.get(old.agent_id)
+        if phase and isinstance(scenario_id, str):
+            job = app_job_queue.enqueue("phase", {"scenario_id": scenario_id, "phase": phase, "request": {}, "retry_of": run_id})
+            return job.to_dict()
         with db.begin():
-            old = db.get(AgentRun, run_id)
-            if old is None:
-                raise not_found("agent_run", run_id)
             row = AgentRunRepository(db).create(agent_id=old.agent_id, phase=old.phase, status="pending", input={"retry_of": run_id, **(old.input or {})}, source_references=old.source_references or [])
         return _row(row)
+
+    @app.get("/model-invocations")
+    def list_model_invocations(run_id: str | None = None, db: Session = Depends(get_session_dep)) -> list[dict[str, Any]]:
+        stmt = select(ModelInvocation).order_by(ModelInvocation.created_at.desc())
+        if run_id:
+            stmt = stmt.where(ModelInvocation.agent_run_id == run_id)
+        return _rows(list(db.scalars(stmt)))
+
+    @app.get("/audit-log")
+    def list_audit_log(entity_type: str | None = None, entity_id: str | None = None, db: Session = Depends(get_session_dep)) -> list[dict[str, Any]]:
+        stmt = select(AuditLog).order_by(AuditLog.created_at.desc())
+        if entity_type:
+            stmt = stmt.where(AuditLog.entity_type == entity_type)
+        if entity_id:
+            stmt = stmt.where(AuditLog.entity_id == entity_id)
+        return _rows(list(db.scalars(stmt)))
 
     @app.get("/advanced-analyses")
     def list_advanced_analyses(prediction_id: str | None = None, db: Session = Depends(get_session_dep)) -> list[dict[str, Any]]:
@@ -575,6 +899,34 @@ def create_app(
         if row is None:
             raise not_found("advanced_analysis", analysis_id)
         return _row(row)
+
+    @app.get("/historical-analogies")
+    def list_historical_analogies(prediction_id: str | None = None, db: Session = Depends(get_session_dep)) -> list[dict[str, Any]]:
+        stmt = select(HistoricalAnalogy).order_by(HistoricalAnalogy.created_at.desc())
+        if prediction_id:
+            stmt = stmt.where(HistoricalAnalogy.prediction_id == prediction_id)
+        return _rows(list(db.scalars(stmt)))
+
+    @app.get("/base-rates")
+    def list_base_rates(prediction_id: str | None = None, db: Session = Depends(get_session_dep)) -> list[dict[str, Any]]:
+        stmt = select(BaseRateEvidence).order_by(BaseRateEvidence.created_at.desc())
+        if prediction_id:
+            stmt = stmt.where(BaseRateEvidence.prediction_id == prediction_id)
+        return _rows(list(db.scalars(stmt)))
+
+    @app.get("/sentiment-drift")
+    def list_sentiment_drift(scenario_id: str | None = None, db: Session = Depends(get_session_dep)) -> list[dict[str, Any]]:
+        stmt = select(SentimentDrift).order_by(SentimentDrift.measured_at.desc())
+        if scenario_id:
+            stmt = stmt.where(SentimentDrift.scenario_id == scenario_id)
+        return _rows(list(db.scalars(stmt)))
+
+    @app.get("/feedback-entries")
+    def list_feedback_entries(prediction_id: str | None = None, db: Session = Depends(get_session_dep)) -> list[dict[str, Any]]:
+        stmt = select(FeedbackEntry).order_by(FeedbackEntry.recorded_at.desc())
+        if prediction_id:
+            stmt = stmt.where(FeedbackEntry.prediction_id == prediction_id)
+        return _rows(list(db.scalars(stmt)))
 
     @app.get("/outcome-checks")
     def list_outcome_checks(prediction_id: str | None = None, db: Session = Depends(get_session_dep)) -> list[dict[str, Any]]:

@@ -9,6 +9,8 @@ from typing import Any, Generic, TypeVar
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from seldon.kb.vector import cosine_similarity, embed_text
+
 from .models import (
     AgentMessage,
     AgentRun,
@@ -114,11 +116,19 @@ class KBRepository(BaseRepository[KBEntry]):
     audit_entity_type = "kb_entry"
 
     def create_entry(self, *, actor: str = "system", reason: str | None = None, **values: Any) -> KBEntry:
+        if values.get("content") and not values.get("content_embedding"):
+            values["content_embedding"] = embed_text(str(values["content"]))
+            values.setdefault("embedding_metadata", {})
+            values["embedding_metadata"] = {**(values.get("embedding_metadata") or {}), "backend": "local_hash", "dimensions": len(values["content_embedding"])}
+            values.setdefault("vector_index_pointer", f"kb:{values.get('source_url') or values['content'][:32]}")
         row = self.create(actor=actor, reason=reason, **values)
         self._version(row, actor=actor, reason=reason or "initial create")
         return row
 
     def update_entry(self, id: str, *, actor: str = "system", reason: str | None = None, **values: Any) -> KBEntry:
+        if values.get("content") and not values.get("content_embedding"):
+            values["content_embedding"] = embed_text(str(values["content"]))
+            values["embedding_metadata"] = {**(values.get("embedding_metadata") or {}), "backend": "local_hash", "dimensions": len(values["content_embedding"])}
         row = self.update(id, actor=actor, reason=reason, **values)
         row.version += 1
         self.session.flush()
@@ -176,8 +186,11 @@ class KBRepository(BaseRepository[KBEntry]):
         return results
 
     def semantic_search(self, query: str, *, limit: int = 10) -> list[KBEntry]:
-        # Phase C.1 adapter boundary: real vector backends plug in here.
-        return self.search(query)[:limit]
+        # Phase C.1 adapter boundary: real vector/pgvector backends plug in here.
+        query_embedding = embed_text(query)
+        rows = list(self.session.scalars(select(KBEntry)))
+        ranked = sorted(rows, key=lambda entry: (cosine_similarity(query_embedding, entry.content_embedding), query.lower() in entry.content.lower()), reverse=True)
+        return ranked[:limit]
 
     def decay_scores(self, entries: list[KBEntry], *, as_of: datetime | None = None, half_life_days: float = 30.0) -> dict[str, float]:
         as_of = as_of or datetime.now().astimezone()

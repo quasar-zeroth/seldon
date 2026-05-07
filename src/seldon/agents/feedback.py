@@ -13,8 +13,8 @@ from typing import Any
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 
-from seldon.data.models import AgentRun, ModelInvocation, OutcomeCheck, ScenarioPrediction
-from seldon.data.repositories import AuditRepository, KBRepository, ScenarioRepository, row_to_dict
+from seldon.data.models import AgentRun, AssumptionRecord, ModelInvocation, OutcomeCheck, ScenarioPrediction, utcnow
+from seldon.data.repositories import AuditRepository, GraphRepository, KBRepository, ScenarioRepository, row_to_dict
 
 from .base import AgentBase
 
@@ -210,6 +210,31 @@ class FeedbackCoordinator(AgentBase[FeedbackInput, FeedbackOutput]):
             "resolved_outcome_key": payload.resolved_outcome_key,
             "resolution_confidence": payload.resolution_confidence,
         }
+        graph_repo = GraphRepository(self.db)
+        applied_corrections: list[dict[str, Any]] = []
+        for correction in payload.graph_corrections:
+            action = correction.get("action")
+            details = correction.get("details", {}) if isinstance(correction.get("details", {}), dict) else {}
+            try:
+                if action == "add_node":
+                    node = graph_repo.create_node(**details)
+                    applied_corrections.append({"action": action, "id": node.id})
+                elif action == "add_edge":
+                    edge = graph_repo.create_edge(**details)
+                    applied_corrections.append({"action": action, "id": edge.id})
+                elif action == "modify_node" and details.get("id"):
+                    node_id = str(details.pop("id"))
+                    node = graph_repo.update_node(node_id, **details)
+                    applied_corrections.append({"action": action, "id": node.id})
+                elif action == "modify_edge" and details.get("id"):
+                    edge_id = str(details.pop("id"))
+                    edge = graph_repo.update_edge(edge_id, **details)
+                    applied_corrections.append({"action": action, "id": edge.id})
+                else:
+                    applied_corrections.append({"action": action, "skipped": True, "reason": "unsupported or missing details"})
+            except Exception as exc:  # keep feedback durable even if one correction is malformed
+                applied_corrections.append({"action": action, "skipped": True, "reason": str(exc)})
+
         kb_ids: list[str] = []
         if payload.update_kb and (root_cause.missed_factors or root_cause.failed_assumptions or root_cause.lessons_learned):
             kb_repo = KBRepository(self.db)
@@ -230,6 +255,13 @@ class FeedbackCoordinator(AgentBase[FeedbackInput, FeedbackOutput]):
             )
             kb_ids.append(correction.id)
 
+        for failed in root_cause.failed_assumptions:
+            for assumption in self.db.scalars(select(AssumptionRecord).where(AssumptionRecord.prediction_id == prediction.id)):
+                if assumption.statement == failed:
+                    assumption.status = "invalid"
+                    assumption.still_valid = False
+                    assumption.last_checked = utcnow()
+
         repo = ScenarioRepository(self.db)
         updated_outcome = {
             "actual_outcome": payload.actual_outcome,
@@ -247,12 +279,12 @@ class FeedbackCoordinator(AgentBase[FeedbackInput, FeedbackOutput]):
             actual_outcome=payload.actual_outcome,
             comparison=root_cause.comparison,
             missed_factors=root_cause.missed_factors,
-            graph_corrections=payload.graph_corrections,
+            graph_corrections=[*payload.graph_corrections, {"applied": applied_corrections}],
             lessons_learned=root_cause.lessons_learned,
         )
         calibration_run, calibration = CalibrationTracker(self.db, config=self.config, llm_client=self.llm_client).run(CalibrationInput(scenario_id=prediction.scenario_id), parent_run_id=run_id)
         child_run_ids.append(calibration_run)
-        AuditRepository(self.db).emit("scenario_prediction", prediction.id, "resolved", actor=self.agent_id, reason="Phase I feedback loop completed", after={"feedback_entry_id": feedback.id, "outcome_check_id": outcome.outcome_check_id, "kb_correction_ids": kb_ids})
+        AuditRepository(self.db).emit("scenario_prediction", prediction.id, "resolved", actor=self.agent_id, reason="Phase I feedback loop completed", after={"feedback_entry_id": feedback.id, "outcome_check_id": outcome.outcome_check_id, "kb_correction_ids": kb_ids, "applied_graph_corrections": applied_corrections})
         return FeedbackOutput(child_run_ids=child_run_ids, feedback_entry_id=feedback.id, outcome_check=outcome, root_cause=root_cause, calibration=calibration, kb_correction_ids=kb_ids)
 
 

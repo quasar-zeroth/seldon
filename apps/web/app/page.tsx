@@ -1,4 +1,31 @@
+import { revalidatePath } from "next/cache";
 import { api, type AgentRun, type GraphEdge, type GraphNode, type Scenario, type ScenarioPrediction } from "../src/lib/api";
+
+async function createScenarioAction(formData: FormData) {
+  "use server";
+  const name = String(formData.get("name") || "").trim();
+  const target = String(formData.get("target_question") || "").trim();
+  if (!name || !target) return;
+  await api.createScenario({ name, target_question: target, time_horizon: String(formData.get("time_horizon") || "") });
+  revalidatePath("/");
+}
+
+async function enqueuePhaseAction(formData: FormData) {
+  "use server";
+  const scenarioId = String(formData.get("scenario_id") || "");
+  const phase = String(formData.get("phase") || "") as "context_gathering" | "extraction" | "graph_construction" | "prediction";
+  if (!scenarioId || !phase) return;
+  await api.enqueuePhase(scenarioId, phase);
+  revalidatePath("/");
+}
+
+async function retryRunAction(formData: FormData) {
+  "use server";
+  const runId = String(formData.get("run_id") || "");
+  if (!runId) return;
+  await api.retryRun(runId);
+  revalidatePath("/");
+}
 
 async function safe<T>(loader: () => Promise<T>): Promise<{ data?: T; error?: string }> {
   try {
@@ -115,6 +142,32 @@ export default async function MissionControl() {
 
       <section className="grid">
         <div className="card">
+          <h2>Create scenario</h2>
+          <form action={createScenarioAction} className="form-stack">
+            <input name="name" placeholder="Scenario name" />
+            <textarea name="target_question" placeholder="Target question" rows={3} />
+            <input name="time_horizon" placeholder="Time horizon" />
+            <button className="button" type="submit">Create</button>
+          </form>
+        </div>
+
+        <div className="card">
+          <h2>Run workflow phase</h2>
+          <form action={enqueuePhaseAction} className="form-stack">
+            <select name="scenario_id" defaultValue={activeScenario?.id ?? ""}>
+              {scenarios.data?.map((scenario) => <option value={scenario.id} key={scenario.id}>{scenario.name}</option>)}
+            </select>
+            <select name="phase" defaultValue="context_gathering">
+              <option value="context_gathering">Context gathering</option>
+              <option value="extraction">Extraction</option>
+              <option value="graph_construction">Graph construction</option>
+              <option value="prediction">Prediction</option>
+            </select>
+            <button className="button" type="submit">Queue phase</button>
+          </form>
+        </div>
+
+        <div className="card">
           <h2>Health</h2>
           {health.data ? (
             <>
@@ -153,6 +206,10 @@ export default async function MissionControl() {
             <div className="row" key={run.id}>
               <span>{run.agent_id}</span>
               <span className="muted">{run.model_invocations?.[0]?.model ?? run.status}</span>
+              <form action={retryRunAction}>
+                <input type="hidden" name="run_id" value={run.id} />
+                <button className="link-button" type="submit">Retry</button>
+              </form>
             </div>
           )) : <p className="muted">No agent runs yet.</p>}
         </div>

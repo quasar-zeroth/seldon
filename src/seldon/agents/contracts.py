@@ -14,6 +14,7 @@ class ContextGatheringInput(BaseModel):
     depth: Literal["light", "standard", "deep"] = "standard"
     source_policy: Literal["kb_first", "kb_only"] = "kb_first"
     max_subqueries: int = Field(default=8, ge=1, le=20)
+    external_documents: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class Subquery(BaseModel):

@@ -87,6 +87,19 @@ async function getJson<T>(path: string): Promise<T> {
   return response.json() as Promise<T>;
 }
 
+async function sendJson<T>(method: "POST" | "PATCH", path: string, body: Record<string, unknown> = {}): Promise<T> {
+  const response = await fetch(`${API_BASE}${path}`, {
+    method,
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+    cache: "no-store",
+  });
+  if (!response.ok) {
+    throw new Error(`Seldon API ${method} ${path} failed: ${response.status}`);
+  }
+  return response.json() as Promise<T>;
+}
+
 export const api = {
   health: () => getJson<Health>("/health"),
   scenarios: () => getJson<Scenario[]>("/scenarios"),
@@ -95,4 +108,8 @@ export const api = {
   graphEdges: () => getJson<GraphEdge[]>("/graph/edges"),
   predictions: () => getJson<ScenarioPrediction[]>("/predictions"),
   modelConfig: () => getJson<ModelConfig>("/config/models"),
+  createScenario: (body: { name: string; target_question: string; time_horizon?: string; description?: string }) => sendJson<Scenario>("POST", "/scenarios", body),
+  enqueuePhase: (scenarioId: string, phase: "context_gathering" | "extraction" | "graph_construction" | "prediction", body: Record<string, unknown> = {}) => sendJson<Record<string, unknown>>("POST", `/scenarios/${scenarioId}/jobs/${phase}`, body),
+  retryRun: (runId: string) => sendJson<Record<string, unknown>>("POST", `/runs/${runId}/retry`),
+  runAdvanced: (predictionId: string) => sendJson<Record<string, unknown>>("POST", `/predictions/${predictionId}/run-advanced-intelligence`),
 };

@@ -208,7 +208,7 @@ class ContextGatheringCoordinator(AgentBase[ContextGatheringInput, ContextGather
     model_profile = "balanced"
 
     @classmethod
-    def input_from_scenario(cls, scenario: Scenario, *, depth: str = "standard", source_policy: str = "kb_first", max_subqueries: int = 8) -> ContextGatheringInput:
+    def input_from_scenario(cls, scenario: Scenario, *, depth: str = "standard", source_policy: str = "kb_first", max_subqueries: int = 8, external_documents: list[dict[str, Any]] | None = None) -> ContextGatheringInput:
         return ContextGatheringInput(
             scenario_id=scenario.id,
             question=scenario.target_question,
@@ -216,6 +216,7 @@ class ContextGatheringCoordinator(AgentBase[ContextGatheringInput, ContextGather
             depth=depth,  # type: ignore[arg-type]
             source_policy=source_policy,  # type: ignore[arg-type]
             max_subqueries=max_subqueries,
+            external_documents=external_documents or [],
         )
 
     def _run(self, payload: ContextGatheringInput, *, run_id: str, parent_run_id: str | None) -> ContextGatheringOutput:
@@ -225,6 +226,23 @@ class ContextGatheringCoordinator(AgentBase[ContextGatheringInput, ContextGather
 
         r_run, retrieval = InformationRetriever(self.db, config=self.config, llm_client=self.llm_client).run(plan, parent_run_id=run_id)
         child_run_ids.append(r_run)
+        for index, document in enumerate(payload.external_documents):
+            content = str(document.get("content") or document.get("text") or "").strip()
+            if not content:
+                continue
+            retrieval.sources.append(
+                RetrievedSource(
+                    source_type=str(document.get("source_type") or "external_document"),
+                    source_id=str(document.get("id") or f"external:{index}"),
+                    url=document.get("url"),
+                    name=str(document.get("name") or document.get("source_name") or "External document"),
+                    content=content,
+                    original_snippet=document.get("original_snippet") or content[:1000],
+                    topics=list(document.get("topics") or plan.topics),
+                    entities=list(document.get("entities") or plan.entities),
+                    confidence=float(document.get("confidence", 0.5)),
+                )
+            )
 
         observations: list[Observation] = []
         for source in retrieval.sources:
