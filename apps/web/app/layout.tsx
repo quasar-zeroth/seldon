@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { AppShell } from "../src/components/shell";
+import "reactflow/dist/style.css";
 import "./styles.css";
 
 export const metadata: Metadata = { title: "The Seldon Project", description: "Prediction intelligence mission control" };

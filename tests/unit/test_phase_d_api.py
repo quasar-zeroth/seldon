@@ -209,3 +209,75 @@ def test_kb_explorer_filters_versions_contradictions_and_related_records():
 
     assert client.post(f"/kb/entries/{first['id']}/supersede/{second['id']}").json()["superseded_by"] == second["id"]
     assert client.get("/kb/search", params={"topic": "copper", "current_only": True}).json()[0]["id"] == second["id"]
+
+
+def test_graph_explorer_filters_mutations_snapshots_and_merge_decisions():
+    client = api_client()
+
+    scenario = client.post("/scenarios", json={"name": "Rates outlook", "target_question": "Rates?"}).json()
+    node_a = client.post(
+        "/graph/nodes",
+        json={
+            "name": "Fed funds rate",
+            "type": "policy",
+            "description": "Policy rate",
+            "scenario_ids": [scenario["id"]],
+            "kb_entry_ids": ["kb-rate"],
+            "stability_score": 0.3,
+            "importance_score": 0.9,
+        },
+    ).json()
+    node_b = client.post(
+        "/graph/nodes",
+        json={"name": "Gold price", "type": "metric", "scenario_ids": [scenario["id"]], "importance_score": 0.6},
+    ).json()
+    edge = client.post(
+        "/graph/edges",
+        json={
+            "source_node_id": node_a["id"],
+            "target_node_id": node_b["id"],
+            "relationship_type": "opposes",
+            "direction": "negative",
+            "confidence": 0.8,
+            "strength": 0.7,
+            "lag": "2 weeks",
+            "evidence_kb_ids": ["kb-rate"],
+            "scenario_ids": [scenario["id"]],
+        },
+    ).json()
+
+    nodes = client.get("/graph/nodes", params={"scenario_id": scenario["id"], "type": "policy", "min_importance": 0.8, "max_stability": 0.4})
+    assert nodes.status_code == 200
+    assert [item["id"] for item in nodes.json()] == [node_a["id"]]
+
+    edges = client.get("/graph/edges", params={"scenario_id": scenario["id"], "relationship_type": "opposes", "direction": "negative", "min_confidence": 0.75, "min_strength": 0.6, "min_evidence_count": 1})
+    assert edges.status_code == 200
+    assert [item["id"] for item in edges.json()] == [edge["id"]]
+
+    patched_node = client.patch(f"/graph/nodes/{node_a['id']}", json={"current_state": "watching", "importance_score": 0.95})
+    assert patched_node.status_code == 200
+    assert client.get(f"/graph/nodes/{node_a['id']}").json()["current_state"] == "watching"
+    patched_edge = client.patch(f"/graph/edges/{edge['id']}", json={"confidence": 0.55, "strength": 0.5})
+    assert patched_edge.status_code == 200
+    assert client.get(f"/graph/edges/{edge['id']}").json()["confidence"] == 0.55
+
+    neighborhood = client.get(f"/graph/neighborhood/{node_a['id']}").json()
+    assert {node["id"] for node in neighborhood["nodes"]} == {node_a["id"], node_b["id"]}
+    assert neighborhood["edges"][0]["id"] == edge["id"]
+
+    first_snapshot = client.post("/graph/snapshots", json={"scenario_id": scenario["id"], "reason": "before"}).json()
+    node_c = client.post("/graph/nodes", json={"name": "Inflation", "type": "metric"}).json()
+    second_snapshot = client.post("/graph/snapshots", json={"scenario_id": scenario["id"], "reason": "after"}).json()
+    diff = client.get(f"/graph/snapshots/{first_snapshot['id']}/diff/{second_snapshot['id']}").json()
+    assert node_c["id"] in diff["added_nodes"]
+
+    reuse = client.get(f"/graph/reuse-candidates/{scenario['id']}").json()
+    assert node_c["id"] in {node["id"] for node in reuse["nodes"]}
+
+    approved = client.post("/graph/merge-proposals/proposal-1/approve", json={"reason": "same entity"})
+    rejected = client.post("/graph/merge-proposals/proposal-2/reject", json={"reason": "different entities"})
+    assert approved.status_code == 202
+    assert approved.json()["status"] == "approved"
+    assert rejected.json()["status"] == "rejected"
+    audit = client.get("/audit-log", params={"entity_type": "graph_merge_proposal", "entity_id": "proposal-1"}).json()
+    assert audit[0]["action"] == "approve"

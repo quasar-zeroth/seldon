@@ -770,8 +770,23 @@ def create_app(
         return _row(row)
 
     @app.get("/graph/nodes")
-    def list_graph_nodes(db: Session = Depends(get_session_dep)) -> list[dict[str, Any]]:
-        return _rows(GraphRepository(db).list_nodes())
+    def list_graph_nodes(
+        scenario_id: str | None = None,
+        type: str | None = None,
+        min_importance: float | None = Query(default=None, ge=0.0, le=1.0),
+        max_stability: float | None = Query(default=None, ge=0.0, le=1.0),
+        db: Session = Depends(get_session_dep),
+    ) -> list[dict[str, Any]]:
+        nodes = GraphRepository(db).list_nodes()
+        if scenario_id:
+            nodes = [node for node in nodes if scenario_id in (node.scenario_ids or [])]
+        if type:
+            nodes = [node for node in nodes if node.type == type]
+        if min_importance is not None:
+            nodes = [node for node in nodes if node.importance_score >= min_importance]
+        if max_stability is not None:
+            nodes = [node for node in nodes if node.stability_score <= max_stability]
+        return _rows(nodes)
 
     @app.get("/graph/nodes/{node_id}")
     def get_graph_node(node_id: str, db: Session = Depends(get_session_dep)) -> dict[str, Any]:
@@ -793,8 +808,33 @@ def create_app(
         return _row(row)
 
     @app.get("/graph/edges")
-    def list_graph_edges(node_id: str | None = None, db: Session = Depends(get_session_dep)) -> list[dict[str, Any]]:
-        return _rows(GraphRepository(db).list_edges(node_id=node_id))
+    def list_graph_edges(
+        node_id: str | None = None,
+        scenario_id: str | None = None,
+        relationship_type: str | None = None,
+        direction: str | None = None,
+        lag: str | None = None,
+        min_confidence: float | None = Query(default=None, ge=0.0, le=1.0),
+        min_strength: float | None = Query(default=None, ge=0.0, le=1.0),
+        min_evidence_count: int | None = Query(default=None, ge=0),
+        db: Session = Depends(get_session_dep),
+    ) -> list[dict[str, Any]]:
+        edges = GraphRepository(db).list_edges(node_id=node_id)
+        if scenario_id:
+            edges = [edge for edge in edges if scenario_id in (edge.scenario_ids or [])]
+        if relationship_type:
+            edges = [edge for edge in edges if edge.relationship_type == relationship_type]
+        if direction:
+            edges = [edge for edge in edges if edge.direction == direction]
+        if lag:
+            edges = [edge for edge in edges if edge.lag == lag]
+        if min_confidence is not None:
+            edges = [edge for edge in edges if edge.confidence >= min_confidence]
+        if min_strength is not None:
+            edges = [edge for edge in edges if edge.strength >= min_strength]
+        if min_evidence_count is not None:
+            edges = [edge for edge in edges if len(edge.evidence_kb_ids or []) >= min_evidence_count]
+        return _rows(edges)
 
     @app.get("/graph/edges/{edge_id}")
     def get_graph_edge(edge_id: str, db: Session = Depends(get_session_dep)) -> dict[str, Any]:
@@ -857,6 +897,20 @@ def create_app(
             raise not_found("scenario", scenario_id)
         result = GraphRepository(db).reuse_candidates(scenario_id, query=q)
         return {"nodes": _rows(result["nodes"]), "edges": _rows(result["edges"])}
+
+    @app.post("/graph/merge-proposals/{proposal_id}/approve", status_code=202)
+    def approve_graph_merge_proposal(proposal_id: str, payload: dict[str, Any] | None = None, db: Session = Depends(get_session_dep)) -> dict[str, Any]:
+        payload = payload or {}
+        with db.begin():
+            audit = GraphRepository(db).audit.emit("graph_merge_proposal", proposal_id, "approve", actor=str(payload.get("actor") or "ui"), reason=payload.get("reason"), after={"proposal_id": proposal_id, "decision": "approved", "payload": payload})
+        return {"proposal_id": proposal_id, "status": "approved", "audit_log_id": audit.id}
+
+    @app.post("/graph/merge-proposals/{proposal_id}/reject", status_code=202)
+    def reject_graph_merge_proposal(proposal_id: str, payload: dict[str, Any] | None = None, db: Session = Depends(get_session_dep)) -> dict[str, Any]:
+        payload = payload or {}
+        with db.begin():
+            audit = GraphRepository(db).audit.emit("graph_merge_proposal", proposal_id, "reject", actor=str(payload.get("actor") or "ui"), reason=payload.get("reason"), after={"proposal_id": proposal_id, "decision": "rejected", "payload": payload})
+        return {"proposal_id": proposal_id, "status": "rejected", "audit_log_id": audit.id}
 
     @app.post("/runs", status_code=201)
     def create_run(payload: AgentRunCreate, db: Session = Depends(get_session_dep)) -> dict[str, Any]:

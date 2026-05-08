@@ -25,6 +25,8 @@ const scenariosPage = await readFile(new URL("../app/scenarios/page.tsx", import
 const scenarioDetail = await readFile(new URL("../app/scenarios/[id]/page.tsx", import.meta.url), "utf8");
 const kbPage = await readFile(new URL("../app/kb/page.tsx", import.meta.url), "utf8");
 const kbDetail = await readFile(new URL("../app/kb/[id]/page.tsx", import.meta.url), "utf8");
+const graphPage = await readFile(new URL("../app/graph/page.tsx", import.meta.url), "utf8");
+const graphCanvas = await readFile(new URL("../src/components/graph-explorer-canvas.tsx", import.meta.url), "utf8");
 for (const needle of ["GET /scenarios?q=&status=", "Create and open", "Latest prediction"]) {
   if (!scenariosPage.includes(needle)) throw new Error(`missing B.2 scenarios list affordance: ${needle}`);
 }
@@ -36,5 +38,11 @@ for (const needle of ["GET /kb/search?filters", "Semantic search", "current_only
 }
 for (const needle of ["GET /kb/entries/{id}/contradictions", "Record supersession", "Record contradiction", "Versions timeline", "Linked scenarios, graph, and predictions"]){
   if (!kbDetail.includes(needle)) throw new Error(`missing B.3 KB detail affordance: ${needle}`);
+}
+for (const needle of ["GraphExplorerCanvas", "GET/PATCH /graph/nodes", "selected_node", "Create graph snapshot", "Approve merge proposal", "Reject merge proposal"]){
+  if (!graphPage.includes(needle)) throw new Error(`missing B.4 graph explorer affordance: ${needle}`);
+}
+for (const needle of ["ReactFlow", "MiniMap", "Controls", "data-testid=\"reactflow-graph-canvas\""]){
+  if (!graphCanvas.includes(needle)) throw new Error(`missing B.4 React Flow canvas capability: ${needle}`);
 }
 console.log(`Route smoke passed for ${routes.length} routes, ${shared.length} components, and ${modules.length} API modules.`);
