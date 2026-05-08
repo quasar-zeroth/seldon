@@ -604,24 +604,80 @@ def create_app(
         q: str | None = None,
         topic: str | None = None,
         entity: str | None = None,
+        source: str | None = None,
+        source_type: str | None = None,
         scenario_id: str | None = None,
         current_only: bool = False,
+        created_since: str | None = None,
+        created_until: str | None = None,
         updated_since: str | None = None,
+        updated_until: str | None = None,
         valid_at: str | None = None,
+        geopolitical_lens: str | None = None,
         min_sentiment: float | None = Query(default=None, ge=-1.0, le=1.0),
         max_sentiment: float | None = Query(default=None, ge=-1.0, le=1.0),
+        min_political_lean: float | None = Query(default=None, ge=-1.0, le=1.0),
+        max_political_lean: float | None = Query(default=None, ge=-1.0, le=1.0),
         min_confidence: float | None = Query(default=None, ge=0.0, le=1.0),
+        max_confidence: float | None = Query(default=None, ge=0.0, le=1.0),
         semantic: bool = False,
         include_scores: bool = False,
+        sort: str = Query(default="updated_at", pattern="^(updated_at|created_at|confidence|sentiment|version)$"),
+        order: str = Query(default="desc", pattern="^(asc|desc)$"),
         db: Session = Depends(get_session_dep),
     ) -> list[dict[str, Any]]:
         from datetime import datetime
 
         repo = KBRepository(db)
+        created_since_dt = datetime.fromisoformat(created_since) if created_since else None
+        created_until_dt = datetime.fromisoformat(created_until) if created_until else None
         updated_dt = datetime.fromisoformat(updated_since) if updated_since else None
+        updated_until_dt = datetime.fromisoformat(updated_until) if updated_until else None
         valid_dt = datetime.fromisoformat(valid_at) if valid_at else None
         rows = repo.semantic_search(q or "", limit=100) if semantic and q else repo.search(q, topic=topic, entity=entity, scenario_id=scenario_id, updated_since=updated_dt, valid_at=valid_dt, current_only=current_only, min_sentiment=min_sentiment, max_sentiment=max_sentiment, min_confidence=min_confidence)
+        if source:
+            source_query = source.lower()
+            rows = [r for r in rows if source_query in (r.source_name or "").lower() or source_query in (r.source_url or "").lower()]
+        if source_type:
+            rows = [r for r in rows if r.source_type == source_type]
+        if created_since_dt:
+            rows = [r for r in rows if r.created_at >= created_since_dt]
+        if created_until_dt:
+            rows = [r for r in rows if r.created_at <= created_until_dt]
+        if updated_until_dt:
+            rows = [r for r in rows if r.updated_at <= updated_until_dt]
+        if geopolitical_lens:
+            rows = [r for r in rows if (r.perspective_tags or {}).get("geopolitical_lens") == geopolitical_lens]
+        if min_political_lean is not None:
+            rows = [r for r in rows if (r.perspective_tags or {}).get("political_lean", 0) >= min_political_lean]
+        if max_political_lean is not None:
+            rows = [r for r in rows if (r.perspective_tags or {}).get("political_lean", 0) <= max_political_lean]
+        if max_confidence is not None:
+            rows = [r for r in rows if (r.perspective_tags or {}).get("confidence", 0) <= max_confidence]
+        reverse = order == "desc"
+        if sort == "confidence":
+            rows = sorted(rows, key=lambda r: (r.perspective_tags or {}).get("confidence", 0), reverse=reverse)
+        elif sort == "sentiment":
+            rows = sorted(rows, key=lambda r: (r.perspective_tags or {}).get("sentiment", 0), reverse=reverse)
+        elif sort == "version":
+            rows = sorted(rows, key=lambda r: r.version, reverse=reverse)
+        elif sort == "created_at":
+            rows = sorted(rows, key=lambda r: r.created_at, reverse=reverse)
+        else:
+            rows = sorted(rows, key=lambda r: r.updated_at, reverse=reverse)
         data = _rows(rows)
+        contradiction_rows = list(db.scalars(select(KBEntryContradiction)))
+        contradiction_counts: dict[str, int] = {}
+        open_counts: dict[str, int] = {}
+        for contradiction in contradiction_rows:
+            for entry_ref in (contradiction.kb_entry_id, contradiction.contradicts_kb_entry_id):
+                contradiction_counts[entry_ref] = contradiction_counts.get(entry_ref, 0) + 1
+                if contradiction.status == "open":
+                    open_counts[entry_ref] = open_counts.get(entry_ref, 0) + 1
+        for item in data:
+            item["contradiction_count"] = contradiction_counts.get(item["id"], 0)
+            item["open_contradiction_count"] = open_counts.get(item["id"], 0)
+            item["is_current"] = item.get("superseded_by") is None
         if include_scores:
             decay = repo.decay_scores(rows)
             confidence = repo.confidence_summary(rows)
@@ -648,6 +704,28 @@ def create_app(
         if db.get(KBEntry, entry_id) is None:
             raise not_found("kb_entry", entry_id)
         return _rows(list(db.scalars(select(KBEntryVersion).where(KBEntryVersion.kb_entry_id == entry_id).order_by(KBEntryVersion.version))))
+
+    @app.get("/kb/entries/{entry_id}/contradictions")
+    def list_kb_entry_contradictions(entry_id: str, db: Session = Depends(get_session_dep)) -> list[dict[str, Any]]:
+        if db.get(KBEntry, entry_id) is None:
+            raise not_found("kb_entry", entry_id)
+        stmt = select(KBEntryContradiction).where(or_(KBEntryContradiction.kb_entry_id == entry_id, KBEntryContradiction.contradicts_kb_entry_id == entry_id)).order_by(KBEntryContradiction.created_at.desc())
+        return _rows(list(db.scalars(stmt)))
+
+    @app.get("/kb/entries/{entry_id}/related")
+    def list_kb_entry_related(entry_id: str, db: Session = Depends(get_session_dep)) -> dict[str, Any]:
+        entry = db.get(KBEntry, entry_id)
+        if entry is None:
+            raise not_found("kb_entry", entry_id)
+        scenarios = [row for row in db.scalars(select(Scenario)) if row.id in (entry.scenario_ids or [])]
+        nodes = [row for row in db.scalars(select(ERGNode)) if entry_id in (row.kb_entry_ids or [])]
+        edges = [row for row in db.scalars(select(ERGEdge)) if entry_id in (row.evidence_kb_ids or [])]
+        predictions = [row for row in db.scalars(select(ScenarioPrediction)) if entry_id in (row.evidence_links or [])]
+        evidence_links = [row for row in db.scalars(select(ScenarioEvidenceLink)) if row.kb_entry_id == entry_id]
+        linked_prediction_ids = {row.scenario_prediction_id for row in evidence_links}
+        if linked_prediction_ids:
+            predictions.extend([row for row in db.scalars(select(ScenarioPrediction)) if row.id in linked_prediction_ids and row not in predictions])
+        return {"scenarios": _rows(scenarios), "graph_nodes": _rows(nodes), "graph_edges": _rows(edges), "predictions": _rows(predictions), "evidence_links": _rows(evidence_links)}
 
     @app.post("/kb/entries/{entry_id}/supersede/{new_entry_id}")
     def supersede_kb_entry(entry_id: str, new_entry_id: str, db: Session = Depends(get_session_dep)) -> dict[str, Any]:

@@ -125,3 +125,87 @@ def test_model_config_patch_updates_local_profiles():
     body = patched.json()
     assert body["profiles"]["fast"] == "google/gemini-2.5-flash"
     assert body["fallback_models"] == ["openrouter/auto"]
+
+
+def test_kb_explorer_filters_versions_contradictions_and_related_records():
+    client = api_client()
+
+    scenario = client.post("/scenarios", json={"name": "Copper outlook", "target_question": "Copper?"}).json()
+    first = client.post(
+        "/kb/entries",
+        json={
+            "content": "Copper inventories are tightening.",
+            "source_type": "news_article",
+            "source_name": "Reuters",
+            "topics": ["copper"],
+            "entities": ["LME"],
+            "scenario_ids": [scenario["id"]],
+            "perspective_tags": {"sentiment": 0.6, "confidence": 0.8, "geopolitical_lens": "neutral"},
+        },
+    ).json()
+    second = client.post(
+        "/kb/entries",
+        json={
+            "content": "Copper inventories are rebuilding.",
+            "source_type": "research_paper",
+            "source_name": "Warehouse survey",
+            "topics": ["copper"],
+            "perspective_tags": {"sentiment": -0.5, "confidence": 0.7},
+        },
+    ).json()
+
+    filtered = client.get(
+        "/kb/search",
+        params={
+            "topic": "copper",
+            "entity": "LME",
+            "source": "Reuters",
+            "source_type": "news_article",
+            "scenario_id": scenario["id"],
+            "current_only": True,
+            "min_sentiment": 0.1,
+            "min_confidence": 0.7,
+            "geopolitical_lens": "neutral",
+            "include_scores": True,
+            "sort": "confidence",
+        },
+    )
+    assert filtered.status_code == 200
+    assert [item["id"] for item in filtered.json()] == [first["id"]]
+    assert filtered.json()[0]["is_current"] is True
+    assert "decay_score" in filtered.json()[0]
+
+    patched = client.patch(f"/kb/entries/{first['id']}", json={"content": "Copper inventories are tightening fast."})
+    assert patched.status_code == 200
+    versions = client.get(f"/kb/entries/{first['id']}/versions").json()
+    assert [version["version"] for version in versions] == [1, 2]
+
+    contradiction = client.post(
+        "/kb/contradictions",
+        json={"kb_entry_id": first["id"], "contradicts_kb_entry_id": second["id"], "description": "Inventory direction conflicts."},
+    )
+    assert contradiction.status_code == 201
+    entry_contradictions = client.get(f"/kb/entries/{first['id']}/contradictions").json()
+    assert entry_contradictions[0]["description"] == "Inventory direction conflicts."
+    assert client.patch(f"/kb/contradictions/{entry_contradictions[0]['id']}", json={"status": "resolved"}).json()["status"] == "resolved"
+
+    node = client.post("/graph/nodes", json={"name": "Copper inventories", "type": "metric", "kb_entry_ids": [first["id"]]}).json()
+    edge_target = client.post("/graph/nodes", json={"name": "Copper price", "type": "metric"}).json()
+    edge = client.post(
+        "/graph/edges",
+        json={"source_node_id": node["id"], "target_node_id": edge_target["id"], "relationship_type": "opposes", "evidence_kb_ids": [first["id"]]},
+    ).json()
+    prediction = client.post(
+        "/predictions",
+        json={"scenario_id": scenario["id"], "statement": "Copper rises", "evidence_links": [first["id"]]},
+    ).json()
+    client.post("/predictions/{}/evidence".format(prediction["id"]), json={"scenario_prediction_id": prediction["id"], "kb_entry_id": first["id"], "relationship": "supports"})
+
+    related = client.get(f"/kb/entries/{first['id']}/related").json()
+    assert related["scenarios"][0]["id"] == scenario["id"]
+    assert related["graph_nodes"][0]["id"] == node["id"]
+    assert related["graph_edges"][0]["id"] == edge["id"]
+    assert related["predictions"][0]["id"] == prediction["id"]
+
+    assert client.post(f"/kb/entries/{first['id']}/supersede/{second['id']}").json()["superseded_by"] == second["id"]
+    assert client.get("/kb/search", params={"topic": "copper", "current_only": True}).json()[0]["id"] == second["id"]

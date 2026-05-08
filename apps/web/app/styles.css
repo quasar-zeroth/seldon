@@ -53,6 +53,11 @@ pre { max-width: 100%; overflow: auto; color: #cbd5e1; background: rgba(7,10,18,
 @keyframes shimmer { 100% { transform: translateX(100%); } }
 @media (max-width: 820px) { .app-shell { position: static; width: auto; border-right: 0; border-bottom: 1px solid rgba(148,163,184,.16); } .app-shell nav { grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); } main { margin: 0; padding: 28px 16px; } .header { display: grid; } .header-actions { justify-content: flex-start; } .wide-grid { grid-template-columns: 1fr; } .row, .stack-row { align-items: flex-start; flex-direction: column; } }
 .filter-bar { display: grid; grid-template-columns: minmax(220px, 1fr) 180px auto; gap: 10px; align-items: center; }
+.kb-filter-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px; align-items: center; }
+.stack-mini { display: grid; justify-items: end; align-content: start; gap: 8px; min-width: 100px; }
+.inline-form { display: grid; grid-template-columns: minmax(180px, 1fr) 140px auto; gap: 10px; margin-top: 10px; }
+.timeline-item { border-top: 1px solid rgba(148, 163, 184, .14); padding-top: 10px; margin-top: 10px; }
+.pill.warning { background: rgba(251, 191, 36, .13); border-color: rgba(251, 191, 36, .3); color: #fde68a; }
 .probability-list { display: grid; gap: 10px; margin-top: 14px; }
 .probability-row { display: grid; grid-template-columns: minmax(80px, 1fr) 2fr 56px; gap: 12px; align-items: center; }
 .probability-row div { height: 10px; overflow: hidden; border-radius: 999px; background: rgba(148,163,184,.18); }

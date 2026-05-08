@@ -23,10 +23,18 @@ for (const name of shared) {
 await Promise.all(modules.map((name) => access(new URL(`../src/lib/api/${name}.ts`, import.meta.url))));
 const scenariosPage = await readFile(new URL("../app/scenarios/page.tsx", import.meta.url), "utf8");
 const scenarioDetail = await readFile(new URL("../app/scenarios/[id]/page.tsx", import.meta.url), "utf8");
+const kbPage = await readFile(new URL("../app/kb/page.tsx", import.meta.url), "utf8");
+const kbDetail = await readFile(new URL("../app/kb/[id]/page.tsx", import.meta.url), "utf8");
 for (const needle of ["GET /scenarios?q=&status=", "Create and open", "Latest prediction"]) {
   if (!scenariosPage.includes(needle)) throw new Error(`missing B.2 scenarios list affordance: ${needle}`);
 }
 for (const needle of ["PATCH /scenarios/{id}", "Download backend report", "Run advanced intelligence", "Resolve prediction with feedback", "Scenario history and versions"]) {
   if (!scenarioDetail.includes(needle)) throw new Error(`missing B.2 scenario detail affordance: ${needle}`);
+}
+for (const needle of ["GET /kb/search?filters", "Semantic search", "current_only", "Create and inspect", "open contradiction"]){
+  if (!kbPage.includes(needle)) throw new Error(`missing B.3 KB explorer affordance: ${needle}`);
+}
+for (const needle of ["GET /kb/entries/{id}/contradictions", "Record supersession", "Record contradiction", "Versions timeline", "Linked scenarios, graph, and predictions"]){
+  if (!kbDetail.includes(needle)) throw new Error(`missing B.3 KB detail affordance: ${needle}`);
 }
 console.log(`Route smoke passed for ${routes.length} routes, ${shared.length} components, and ${modules.length} API modules.`);

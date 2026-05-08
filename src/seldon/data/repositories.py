@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Generic, TypeVar
 
@@ -193,10 +193,15 @@ class KBRepository(BaseRepository[KBEntry]):
         return ranked[:limit]
 
     def decay_scores(self, entries: list[KBEntry], *, as_of: datetime | None = None, half_life_days: float = 30.0) -> dict[str, float]:
-        as_of = as_of or datetime.now().astimezone()
+        as_of = as_of or datetime.now(timezone.utc)
+        if as_of.tzinfo is None:
+            as_of = as_of.replace(tzinfo=timezone.utc)
         scores: dict[str, float] = {}
         for entry in entries:
-            age_days = max(0.0, (as_of - entry.updated_at).total_seconds() / 86400)
+            updated_at = entry.updated_at
+            if updated_at.tzinfo is None:
+                updated_at = updated_at.replace(tzinfo=timezone.utc)
+            age_days = max(0.0, (as_of - updated_at).total_seconds() / 86400)
             scores[entry.id] = 0.5 ** (age_days / half_life_days)
         return scores
 
