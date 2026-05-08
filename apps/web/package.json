@@ -6,7 +6,8 @@
     "dev": "next dev",
     "build": "next build",
     "lint": "next lint",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test:routes": "node tests/route-smoke.mjs"
   },
   "dependencies": {
     "@types/node": "^20.0.0",

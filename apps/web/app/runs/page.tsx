@@ -1,0 +1,4 @@
+import Link from "next/link";
+import { PageHeader, Card, EmptyState, EndpointList, RunStatus } from "../../src/components/ui";
+import { runsApi } from "../../src/lib/api";
+export default async function RunsPage() { const runs = await runsApi.list(); return <><PageHeader title="Agent Runs" subtitle="Replayable run records, model invocations, statuses, and errors." /><EndpointList endpoints={["GET /runs"]} /><Card title="Run console">{runs.length ? runs.map((run) => <div className="stack-row" key={run.id}><div><Link href={`/runs/${run.id}`}><strong>{run.agent_id}</strong></Link><p className="muted">{run.phase ?? "no phase"} · {run.model_invocations?.[0]?.model ?? "model not recorded"}</p></div><RunStatus status={run.status} /></div>) : <EmptyState detail="No run records exist yet." />}</Card></>; }
