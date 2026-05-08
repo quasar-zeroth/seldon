@@ -302,6 +302,22 @@ def create_app(
         db.execute(select(1)).scalar_one()
         return {"ok": True, "service": "seldon-api", "llm_default_model": llm.config.default_model}
 
+    def _config_status(cfg: SeldonConfig) -> dict[str, Any]:
+        sqlite_path = cfg.database.sqlite_path if cfg.database.url is None or cfg.database.url.startswith("sqlite") else None
+        vector_path = cfg.ops.vector_index_path
+        return {
+            "source_configuration": {"configured_sources": "database", "sources_endpoint": "/sources", "runtime_editable": False},
+            "persistence_backend": {"kind": "sqlite" if sqlite_path else "external", "url_configured": bool(cfg.database.url), "sqlite_path": str(sqlite_path) if sqlite_path else None, "sqlite_exists": sqlite_path.exists() if sqlite_path else None, "runtime_editable": False},
+            "vector_backend": {"kind": "local_hash", "index_path": str(vector_path), "index_path_exists": vector_path.exists(), "runtime_editable": False},
+            "auth": {"api_key_required": cfg.ops.require_api_key, "api_key_env": cfg.ops.api_key_env, "api_key_configured": bool(os.getenv(cfg.ops.api_key_env)), "openrouter_api_key_env": cfg.llm.api_key_env, "openrouter_api_key_configured": bool(os.getenv(cfg.llm.api_key_env)), "secrets_exposed": False},
+            "runtime_editable": ["profiles.fast", "profiles.balanced", "profiles.reasoning", "profiles.embedding", "fallback_models", "agents.*.model_profile", "agents.*.model", "agents.*.temperature", "agents.*.max_tokens"],
+            "deploy_time": ["database", "vector_backend", "auth secrets", "source connectors"],
+        }
+
+    @app.get("/config/status")
+    def config_status(cfg: SeldonConfig = Depends(get_config_dep)) -> dict[str, Any]:
+        return _config_status(cfg)
+
     @app.get("/config/models")
     def model_config(cfg: SeldonConfig = Depends(get_config_dep)) -> dict[str, Any]:
         return {
@@ -313,17 +329,66 @@ def create_app(
             },
             "fallback_models": cfg.llm.fallback_models,
             "agents": cfg.agents.model_dump(mode="json"),
+            "status": _config_status(cfg),
         }
 
     @app.patch("/config/models")
     def patch_model_config(patch: dict[str, Any], cfg: SeldonConfig = Depends(get_config_dep)) -> dict[str, Any]:
+        def validate_model(value: Any, field: str) -> str:
+            if not isinstance(value, str) or not value.strip():
+                raise HTTPException(status_code=422, detail={"code": "validation_error", "message": f"{field} must be a non-empty model id"})
+            return value.strip()
+
+        def validate_profile(value: Any, field: str) -> str:
+            profile = validate_model(value, field)
+            if profile not in {"fast", "balanced", "reasoning", "embedding"}:
+                raise HTTPException(status_code=422, detail={"code": "validation_error", "message": f"{field} must be one of fast, balanced, reasoning, embedding"})
+            return profile
+
         profiles = patch.get("profiles", {})
+        if profiles is not None and not isinstance(profiles, dict):
+            raise HTTPException(status_code=422, detail={"code": "validation_error", "message": "profiles must be an object"})
         mapping = {"fast": "fast_model", "balanced": "default_model", "reasoning": "reasoning_model", "embedding": "embedding_model"}
         for profile, field in mapping.items():
             if profile in profiles:
-                setattr(cfg.llm, field, profiles[profile])
+                setattr(cfg.llm, field, validate_model(profiles[profile], f"profiles.{profile}"))
         if "fallback_models" in patch:
-            cfg.llm.fallback_models = list(patch["fallback_models"])
+            fallback_models = patch["fallback_models"]
+            if not isinstance(fallback_models, list):
+                raise HTTPException(status_code=422, detail={"code": "validation_error", "message": "fallback_models must be a list"})
+            cfg.llm.fallback_models = [validate_model(model, "fallback_models") for model in fallback_models]
+        agents_patch = patch.get("agents", {})
+        if agents_patch is not None and not isinstance(agents_patch, dict):
+            raise HTTPException(status_code=422, detail={"code": "validation_error", "message": "agents must be an object"})
+        for agent_id, agent_values in agents_patch.items():
+            if not hasattr(cfg.agents, agent_id):
+                raise HTTPException(status_code=422, detail={"code": "validation_error", "message": f"unknown agent override: {agent_id}"})
+            if not isinstance(agent_values, dict):
+                raise HTTPException(status_code=422, detail={"code": "validation_error", "message": f"agents.{agent_id} must be an object"})
+            agent_cfg = getattr(cfg.agents, agent_id)
+            if "model_profile" in agent_values:
+                agent_cfg.model_profile = validate_profile(agent_values["model_profile"], f"agents.{agent_id}.model_profile")
+            if "model" in agent_values:
+                model = agent_values["model"]
+                agent_cfg.model = None if model in {None, ""} else validate_model(model, f"agents.{agent_id}.model")
+            if "temperature" in agent_values:
+                temp = agent_values["temperature"]
+                if temp in {None, ""}:
+                    agent_cfg.temperature = None
+                else:
+                    temp_float = float(temp)
+                    if temp_float < 0 or temp_float > 2:
+                        raise HTTPException(status_code=422, detail={"code": "validation_error", "message": f"agents.{agent_id}.temperature must be between 0 and 2"})
+                    agent_cfg.temperature = temp_float
+            if "max_tokens" in agent_values:
+                tokens = agent_values["max_tokens"]
+                if tokens in {None, ""}:
+                    agent_cfg.max_tokens = None
+                else:
+                    token_int = int(tokens)
+                    if token_int < 1:
+                        raise HTTPException(status_code=422, detail={"code": "validation_error", "message": f"agents.{agent_id}.max_tokens must be positive"})
+                    agent_cfg.max_tokens = token_int
         return model_config(cfg)
 
     @app.post("/sources", status_code=201)

@@ -381,3 +381,38 @@ def test_chart_analytics_endpoint_aggregates_persisted_visualization_records():
     assert body["cascade_risks"][0]["risk"] == "liquidity shock"
     assert body["model_performance"][0]["agent"] == "prediction_coordinator"
     assert body["model_performance"][0]["total_tokens"] == 99
+
+
+def test_settings_status_and_model_patch_validation_and_agent_overrides():
+    client = api_client()
+
+    status = client.get("/config/status")
+    assert status.status_code == 200
+    body = status.json()
+    assert body["auth"]["secrets_exposed"] is False
+    assert "api_key_configured" in body["auth"]
+    assert body["persistence_backend"]["runtime_editable"] is False
+    assert "profiles.fast" in body["runtime_editable"]
+
+    patched = client.patch(
+        "/config/models",
+        json={
+            "profiles": {"fast": "google/gemini-2.5-flash", "balanced": "anthropic/claude-sonnet-4.5"},
+            "fallback_models": ["openrouter/auto"],
+            "agents": {"query_decomposer": {"model_profile": "fast", "model": "openrouter/auto", "temperature": 0.25, "max_tokens": 512}},
+        },
+    )
+    assert patched.status_code == 200
+    config = patched.json()
+    assert config["profiles"]["fast"] == "google/gemini-2.5-flash"
+    assert config["fallback_models"] == ["openrouter/auto"]
+    assert config["agents"]["query_decomposer"]["model"] == "openrouter/auto"
+    assert config["agents"]["query_decomposer"]["temperature"] == 0.25
+    assert config["status"]["vector_backend"]["kind"] == "local_hash"
+
+    bad_profile = client.patch("/config/models", json={"agents": {"query_decomposer": {"model_profile": "slow"}}})
+    assert bad_profile.status_code == 422
+    assert bad_profile.json()["error"]["code"] == "validation_error"
+
+    bad_agent = client.patch("/config/models", json={"agents": {"not_an_agent": {"model_profile": "fast"}}})
+    assert bad_agent.status_code == 422

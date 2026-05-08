@@ -30,6 +30,7 @@ const graphCanvas = await readFile(new URL("../src/components/graph-explorer-can
 const runsPage = await readFile(new URL("../app/runs/page.tsx", import.meta.url), "utf8");
 const runDetail = await readFile(new URL("../app/runs/[id]/page.tsx", import.meta.url), "utf8");
 const calibrationPage = await readFile(new URL("../app/calibration/page.tsx", import.meta.url), "utf8");
+const settingsPage = await readFile(new URL("../app/settings/page.tsx", import.meta.url), "utf8");
 const chartsDashboard = await readFile(new URL("../src/components/charts-dashboard.tsx", import.meta.url), "utf8");
 for (const needle of ["GET /scenarios?q=&status=", "Create and open", "Latest prediction"]) {
   if (!scenariosPage.includes(needle)) throw new Error(`missing B.2 scenarios list affordance: ${needle}`);
@@ -57,6 +58,9 @@ for (const needle of ["GET /runs/{id}/messages", "GET /runs/{id}/related", "Mode
 }
 for (const needle of ["GET /calibration/summary", "GET /feedback-entries", "GET /outcome-checks", "GET /analytics/charts", "POST /predictions/{id}/resolve", "Resolve prediction with feedback", "Calibration charts and analytical visualizations", "Resolved predictions table", "Miss analysis and root-cause detail drawer", "Trigger re-prediction"]){
   if (!calibrationPage.includes(needle)) throw new Error(`missing B.6 calibration affordance: ${needle}`);
+}
+for (const needle of ["GET /config/status", "Runtime-editable model profiles", "Agent-specific overrides", "Source configuration/status", "Persistence backend status", "Vector backend status", "Auth/API-key status", "Runtime vs deploy-time settings", "Secret values are never exposed"]){
+  if (!settingsPage.includes(needle)) throw new Error(`missing B.8 settings affordance: ${needle}`);
 }
 for (const needle of ["recharts", "Probability history chart", "Prediction confidence chart", "Calibration curve and bucket chart", "Sentiment drift chart", "Uncertainty / cascade-risk visualization", "Model/profile performance by agent type", "EmptyState", "data-testid=\"b7-scenario-analytics-charts\""]) {
   if (!chartsDashboard.includes(needle)) throw new Error(`missing B.7 chart capability: ${needle}`);

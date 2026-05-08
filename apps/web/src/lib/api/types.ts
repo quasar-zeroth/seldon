@@ -12,7 +12,7 @@ export type GraphNode = { id: string; name: string; type: "entity" | "event" | "
 export type GraphEdge = { id: string; source_node_id: string; target_node_id: string; relationship_type: string; description: string; strength: number; confidence: number; lag?: string | null; direction: "positive" | "negative" | "complex"; evidence_kb_ids: string[]; scenario_ids: string[] };
 export type GraphSnapshot = { id: string; scenario_id?: string | null; snapshot: Record<string, unknown>; created_at: string; reason?: string | null; agent_id?: string | null };
 export type ScenarioPrediction = { id: string; scenario_id?: string | null; statement: string; scope: string; timeframe: string; resolution_criteria: string; scenarios: Array<{ outcome?: string; probability?: number; confidence?: number; key_drivers?: string[]; key_assumptions?: string[]; stability?: string; reasoning_trace?: string }>; probabilities: Record<string, number>; confidence: number; key_drivers: string[]; evidence_links: string[]; assumptions: string[]; probability_history: Array<Record<string, string | number>>; status: string; outcome?: Record<string, unknown> | null; calibration_result?: Record<string, unknown> | null; created_at: string; updated_at: string };
-export type ModelConfig = { profiles: Record<"fast" | "balanced" | "reasoning" | "embedding", string>; fallback_models: string[]; agents: Record<string, { model_profile: string; model?: string | null; temperature?: number | null; max_tokens?: number | null }> };
+export type ModelConfig = { profiles: Record<"fast" | "balanced" | "reasoning" | "embedding", string>; fallback_models: string[]; agents: Record<string, { model_profile: string; model?: string | null; temperature?: number | null; max_tokens?: number | null }>; status?: ConfigStatus };
 export type CalibrationBucket = { bucket: string; count: number; average_confidence: number; average_probability_assigned: number; empirical_accuracy: number; brier_score: number };
 export type CalibrationSummary = { total_predictions?: number; resolved_predictions?: number; brier_score?: number | null; log_score?: number | null; calibration_buckets?: CalibrationBucket[]; buckets?: Array<Record<string, unknown>>; per_agent?: Record<string, Record<string, unknown>>; per_model?: Record<string, Record<string, unknown>>; [key: string]: unknown };
 export type FeedbackEntry = { id: string; scenario_id?: string | null; prediction_id?: string | null; actual_outcome: string; recorded_at: string; comparison: string; missed_factors: string[]; graph_corrections: Array<Record<string, unknown>>; lessons_learned: string };
@@ -28,4 +28,12 @@ export type ChartAnalytics = {
   uncertainty: Array<Record<string, string | number | boolean | null | undefined>>;
   cascade_risks: Array<Record<string, string | number | boolean | null | undefined>>;
   model_performance: ModelPerformancePoint[];
+};
+export type ConfigStatus = {
+  source_configuration: Record<string, unknown>;
+  persistence_backend: Record<string, unknown>;
+  vector_backend: Record<string, unknown>;
+  auth: Record<string, unknown>;
+  runtime_editable: string[];
+  deploy_time: string[];
 };
