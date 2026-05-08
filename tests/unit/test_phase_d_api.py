@@ -211,6 +211,55 @@ def test_kb_explorer_filters_versions_contradictions_and_related_records():
     assert client.get("/kb/search", params={"topic": "copper", "current_only": True}).json()[0]["id"] == second["id"]
 
 
+def test_runs_console_filters_detail_retry_and_related_records():
+    client = api_client()
+
+    scenario = client.post("/scenarios", json={"name": "Run scenario", "target_question": "What happened?"}).json()
+    kb = client.post("/kb/entries", json={"content": "Run cited fact."}).json()
+    node = client.post("/graph/nodes", json={"name": "Run node", "type": "entity"}).json()
+    edge_target = client.post("/graph/nodes", json={"name": "Run target", "type": "metric"}).json()
+    edge = client.post("/graph/edges", json={"source_node_id": node["id"], "target_node_id": edge_target["id"], "relationship_type": "causes"}).json()
+    prediction = client.post("/predictions", json={"scenario_id": scenario["id"], "statement": "Run prediction"}).json()
+
+    run = client.post(
+        "/runs",
+        json={"agent_id": "test_agent", "phase": "extraction", "status": "failed", "input": {"scenario_id": scenario["id"]}, "source_references": [kb["id"]]},
+    ).json()
+    patched = client.patch(
+        f"/runs/{run['id']}",
+        json={"output": {"kb_entry_id": kb["id"], "node_id": node["id"], "edge_id": edge["id"], "prediction_id": prediction["id"]}, "error": "boom"},
+    )
+    assert patched.status_code == 200
+    message = client.post(f"/runs/{run['id']}/messages", json={"agent_run_id": run["id"], "role": "assistant", "content": "created records"})
+    assert message.status_code == 201
+    invocation = client.post(
+        f"/runs/{run['id']}/model-invocations",
+        json={"agent_run_id": run["id"], "model": "test/model", "provider": "openrouter", "usage": {"total_tokens": 42}, "estimated_cost": 0.01, "ok": False, "error": "model failed"},
+    )
+    assert invocation.status_code == 201
+
+    filtered = client.get(
+        "/runs",
+        params={"scenario_id": scenario["id"], "phase": "extraction", "agent": "test_agent", "status": "failed", "model": "test/model", "failure_state": "failed"},
+    )
+    assert filtered.status_code == 200
+    assert [item["id"] for item in filtered.json()] == [run["id"]]
+    assert filtered.json()[0]["model_invocations"][0]["model"] == "test/model"
+
+    detail = client.get(f"/runs/{run['id']}").json()
+    assert detail["model_invocations"][0]["usage"]["total_tokens"] == 42
+    assert client.get(f"/runs/{run['id']}/messages").json()[0]["content"] == "created records"
+    related = client.get(f"/runs/{run['id']}/related").json()
+    assert related["kb_entries"][0]["id"] == kb["id"]
+    assert related["graph_nodes"][0]["id"] == node["id"]
+    assert related["graph_edges"][0]["id"] == edge["id"]
+    assert related["predictions"][0]["id"] == prediction["id"]
+
+    retry = client.post(f"/runs/{run['id']}/retry")
+    assert retry.status_code == 202
+    assert retry.json()["status"] == "pending"
+
+
 def test_graph_explorer_filters_mutations_snapshots_and_merge_decisions():
     client = api_client()
 

@@ -919,19 +919,53 @@ def create_app(
         return _row(row)
 
     @app.get("/runs")
-    def list_runs(limit: int = Query(100, ge=1, le=500), offset: int = Query(0, ge=0), db: Session = Depends(get_session_dep)) -> list[dict[str, Any]]:
-        runs = list(db.scalars(select(AgentRun).order_by(AgentRun.updated_at.desc()).offset(offset).limit(limit)))
+    def list_runs(
+        scenario_id: str | None = None,
+        phase: str | None = None,
+        agent: str | None = None,
+        status_filter: str | None = Query(default=None, alias="status"),
+        model: str | None = None,
+        failure_state: str | None = None,
+        created_since: str | None = None,
+        created_until: str | None = None,
+        limit: int = Query(100, ge=1, le=500),
+        offset: int = Query(0, ge=0),
+        db: Session = Depends(get_session_dep),
+    ) -> list[dict[str, Any]]:
+        from datetime import datetime
+
+        stmt = select(AgentRun).order_by(AgentRun.updated_at.desc())
+        if phase:
+            stmt = stmt.where(AgentRun.phase == phase)
+        if agent:
+            stmt = stmt.where(AgentRun.agent_id == agent)
+        if status_filter:
+            stmt = stmt.where(AgentRun.status == status_filter)
+        if failure_state == "failed":
+            stmt = stmt.where(or_(AgentRun.status == "failed", AgentRun.error.is_not(None)))
+        elif failure_state == "retryable":
+            stmt = stmt.where(AgentRun.status.in_(["failed", "error", "cancelled"]))
+        if created_since:
+            stmt = stmt.where(AgentRun.created_at >= datetime.fromisoformat(created_since))
+        if created_until:
+            stmt = stmt.where(AgentRun.created_at <= datetime.fromisoformat(created_until))
+        candidates = list(db.scalars(stmt))
+        if scenario_id:
+            candidates = [run for run in candidates if (run.input or {}).get("scenario_id") == scenario_id or (run.input or {}).get("payload", {}).get("scenario_id") == scenario_id]
         invocations = list(db.scalars(select(ModelInvocation)))
         by_run: dict[str, list[dict[str, Any]]] = {}
         for invocation in invocations:
             if invocation.agent_run_id:
                 by_run.setdefault(invocation.agent_run_id, []).append(_row(invocation))
         rows = []
-        for run in runs:
+        for run in candidates:
             data = _row(run)
-            data["model_invocations"] = by_run.get(run.id, [])
+            run_invocations = by_run.get(run.id, [])
+            if model and not any(model.lower() in str(invocation.get("model", "")).lower() for invocation in run_invocations):
+                continue
+            data["model_invocations"] = run_invocations
             rows.append(data)
-        return rows
+        return rows[offset : offset + limit]
 
     @app.post("/predictions", status_code=201)
     def create_prediction(payload: ScenarioPredictionCreate, db: Session = Depends(get_session_dep)) -> dict[str, Any]:
@@ -995,6 +1029,20 @@ def create_app(
         data["model_invocations"] = _rows(list(db.scalars(select(ModelInvocation).where(ModelInvocation.agent_run_id == run_id))))
         return data
 
+    @app.get("/runs/{run_id}/related")
+    def get_run_related(run_id: str, db: Session = Depends(get_session_dep)) -> dict[str, Any]:
+        row = db.get(AgentRun, run_id)
+        if row is None:
+            raise not_found("agent_run", run_id)
+        haystack = str(row_to_dict(row))
+        kb_entries = [entry for entry in db.scalars(select(KBEntry)) if entry.id in haystack or entry.id in (row.source_references or [])]
+        graph_nodes = [node for node in db.scalars(select(ERGNode)) if node.id in haystack]
+        graph_edges = [edge for edge in db.scalars(select(ERGEdge)) if edge.id in haystack]
+        predictions = [prediction for prediction in db.scalars(select(ScenarioPrediction)) if prediction.id in haystack]
+        feedback_entries = [feedback for feedback in db.scalars(select(FeedbackEntry)) if feedback.id in haystack]
+        audit_records = [audit for audit in db.scalars(select(AuditLog).order_by(AuditLog.created_at.desc())) if audit.actor == row.agent_id or audit.entity_id in haystack or audit.id in haystack]
+        return {"kb_entries": _rows(kb_entries), "graph_nodes": _rows(graph_nodes), "graph_edges": _rows(graph_edges), "predictions": _rows(predictions), "feedback_entries": _rows(feedback_entries), "audit_log": _rows(audit_records)}
+
     @app.patch("/runs/{run_id}")
     def update_run(run_id: str, payload: AgentRunUpdate, db: Session = Depends(get_session_dep)) -> dict[str, Any]:
         with db.begin():
@@ -1029,24 +1077,25 @@ def create_app(
 
     @app.post("/runs/{run_id}/retry", status_code=202)
     def retry_run(run_id: str, db: Session = Depends(get_session_dep)) -> dict[str, Any]:
-        old = db.get(AgentRun, run_id)
-        if old is None:
-            raise not_found("agent_run", run_id)
-        scenario_id = (old.input or {}).get("scenario_id") or (old.input or {}).get("payload", {}).get("scenario_id")
-        phase_map = {
-            "context_gathering_coordinator": "context_gathering",
-            "extraction_coordinator": "extraction",
-            "graph_construction_coordinator": "graph_construction",
-            "convergence_loop_coordinator": "graph_construction",
-            "prediction_coordinator": "prediction",
-        }
-        phase = phase_map.get(old.agent_id)
-        if phase and isinstance(scenario_id, str):
-            job = app_job_queue.enqueue("phase", {"scenario_id": scenario_id, "phase": phase, "request": {}, "retry_of": run_id})
-            return job.to_dict()
         with db.begin():
+            old = db.get(AgentRun, run_id)
+            if old is None:
+                raise not_found("agent_run", run_id)
+            scenario_id = (old.input or {}).get("scenario_id") or (old.input or {}).get("payload", {}).get("scenario_id")
+            phase_map = {
+                "context_gathering_coordinator": "context_gathering",
+                "extraction_coordinator": "extraction",
+                "graph_construction_coordinator": "graph_construction",
+                "convergence_loop_coordinator": "graph_construction",
+                "prediction_coordinator": "prediction",
+            }
+            phase = phase_map.get(old.agent_id)
+            if phase and isinstance(scenario_id, str):
+                job = app_job_queue.enqueue("phase", {"scenario_id": scenario_id, "phase": phase, "request": {}, "retry_of": run_id})
+                return job.to_dict()
             row = AgentRunRepository(db).create(agent_id=old.agent_id, phase=old.phase, status="pending", input={"retry_of": run_id, **(old.input or {})}, source_references=old.source_references or [])
-        return _row(row)
+            data = _row(row)
+        return data
 
     @app.get("/model-invocations")
     def list_model_invocations(run_id: str | None = None, db: Session = Depends(get_session_dep)) -> list[dict[str, Any]]:

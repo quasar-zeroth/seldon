@@ -27,6 +27,8 @@ const kbPage = await readFile(new URL("../app/kb/page.tsx", import.meta.url), "u
 const kbDetail = await readFile(new URL("../app/kb/[id]/page.tsx", import.meta.url), "utf8");
 const graphPage = await readFile(new URL("../app/graph/page.tsx", import.meta.url), "utf8");
 const graphCanvas = await readFile(new URL("../src/components/graph-explorer-canvas.tsx", import.meta.url), "utf8");
+const runsPage = await readFile(new URL("../app/runs/page.tsx", import.meta.url), "utf8");
+const runDetail = await readFile(new URL("../app/runs/[id]/page.tsx", import.meta.url), "utf8");
 for (const needle of ["GET /scenarios?q=&status=", "Create and open", "Latest prediction"]) {
   if (!scenariosPage.includes(needle)) throw new Error(`missing B.2 scenarios list affordance: ${needle}`);
 }
@@ -44,5 +46,11 @@ for (const needle of ["GraphExplorerCanvas", "GET/PATCH /graph/nodes", "selected
 }
 for (const needle of ["ReactFlow", "MiniMap", "Controls", "data-testid=\"reactflow-graph-canvas\""]){
   if (!graphCanvas.includes(needle)) throw new Error(`missing B.4 React Flow canvas capability: ${needle}`);
+}
+for (const needle of ["GET /runs?filters", "failure_state", "Run timeline", "Retry"]){
+  if (!runsPage.includes(needle)) throw new Error(`missing B.5 runs console affordance: ${needle}`);
+}
+for (const needle of ["GET /runs/{id}/messages", "GET /runs/{id}/related", "Model invocations", "Input JSON", "Output JSON", "Related records", "Retry through backend"]){
+  if (!runDetail.includes(needle)) throw new Error(`missing B.5 run detail affordance: ${needle}`);
 }
 console.log(`Route smoke passed for ${routes.length} routes, ${shared.length} components, and ${modules.length} API modules.`);
