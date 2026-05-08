@@ -10,8 +10,8 @@ from typing import Any
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
-from sqlalchemy import Engine, select
+from fastapi.responses import JSONResponse, PlainTextResponse
+from sqlalchemy import Engine, or_, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from pydantic import BaseModel, Field
@@ -349,8 +349,20 @@ def create_app(
         return _row(row)
 
     @app.get("/scenarios")
-    def list_scenarios(limit: int = Query(100, ge=1, le=500), offset: int = Query(0, ge=0), db: Session = Depends(get_session_dep)) -> list[dict[str, Any]]:
-        return _rows(list(db.scalars(select(Scenario).order_by(Scenario.created_at.desc()).offset(offset).limit(limit))))
+    def list_scenarios(
+        q: str | None = None,
+        status_filter: str | None = Query(default=None, alias="status"),
+        limit: int = Query(100, ge=1, le=500),
+        offset: int = Query(0, ge=0),
+        db: Session = Depends(get_session_dep),
+    ) -> list[dict[str, Any]]:
+        stmt = select(Scenario).order_by(Scenario.created_at.desc())
+        if q:
+            pattern = f"%{q}%"
+            stmt = stmt.where(or_(Scenario.name.ilike(pattern), Scenario.description.ilike(pattern), Scenario.target_question.ilike(pattern)))
+        if status_filter:
+            stmt = stmt.where(Scenario.status == status_filter)
+        return _rows(list(db.scalars(stmt.offset(offset).limit(limit))))
 
     @app.get("/scenarios/{scenario_id}")
     def get_scenario(scenario_id: str, db: Session = Depends(get_session_dep)) -> dict[str, Any]:
@@ -367,6 +379,40 @@ def create_app(
             raise HTTPException(status_code=422, detail={"code": "validation_error", "message": f"unsupported phase: {phase}"})
         job = app_job_queue.enqueue("phase", {"scenario_id": scenario_id, "phase": phase, "request": payload or {}})
         return job.to_dict()
+
+    @app.get("/scenarios/{scenario_id}/report", response_class=PlainTextResponse)
+    def scenario_report(scenario_id: str, db: Session = Depends(get_session_dep)) -> str:
+        scenario = db.get(Scenario, scenario_id)
+        if scenario is None:
+            raise not_found("scenario", scenario_id)
+        predictions = list(db.scalars(select(ScenarioPrediction).where(ScenarioPrediction.scenario_id == scenario_id).order_by(ScenarioPrediction.updated_at.desc()).limit(1)))
+        latest = predictions[0] if predictions else None
+        lines = [
+            f"# {scenario.name}",
+            "",
+            f"Question: {scenario.target_question}",
+            f"Horizon: {scenario.time_horizon or 'not set'}",
+            f"Status: {scenario.status}",
+        ]
+        if scenario.description:
+            lines.extend(["", "## Description", scenario.description])
+        if latest is not None:
+            lines.extend([
+                "",
+                "## Latest prediction",
+                latest.statement,
+                "",
+                f"Confidence: {round(latest.confidence * 100)}%",
+                f"Status: {latest.status}",
+                "",
+                "## Probabilities",
+            ])
+            lines.extend([f"- {key}: {round(float(value) * 100)}%" for key, value in latest.probabilities.items() if isinstance(value, int | float)])
+            lines.extend(["", "## Assumptions"])
+            lines.extend([f"- {item}" for item in latest.assumptions] or ["- None recorded yet"])
+            lines.extend(["", "## Evidence"])
+            lines.extend([f"- KB {item}" for item in latest.evidence_links] or ["- None linked yet"])
+        return "\n".join(lines) + "\n"
 
     @app.patch("/scenarios/{scenario_id}")
     def update_scenario(scenario_id: str, payload: ScenarioUpdate, db: Session = Depends(get_session_dep)) -> dict[str, Any]:

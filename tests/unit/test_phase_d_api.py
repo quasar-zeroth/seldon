@@ -82,6 +82,41 @@ def test_error_responses_are_consistent():
     assert body["error"]["details"]
 
 
+def test_scenario_filters_patch_and_backend_report_export():
+    client = api_client()
+
+    gold = client.post("/scenarios", json={"name": "Gold outlook", "target_question": "Gold?", "description": "Metals", "status": "active"}).json()
+    client.post("/scenarios", json={"name": "Oil outlook", "target_question": "Oil?", "status": "paused"})
+
+    filtered = client.get("/scenarios", params={"q": "gold", "status": "active"})
+    assert filtered.status_code == 200
+    assert [item["id"] for item in filtered.json()] == [gold["id"]]
+
+    patched = client.patch(f"/scenarios/{gold['id']}", json={"time_horizon": "6 months", "status": "paused"})
+    assert patched.status_code == 200
+    assert patched.json()["time_horizon"] == "6 months"
+    assert patched.json()["status"] == "paused"
+
+    prediction = client.post(
+        "/predictions",
+        json={
+            "scenario_id": gold["id"],
+            "statement": "Gold base case remains constructive.",
+            "probabilities": {"bull": 0.25, "base": 0.55, "bear": 0.2},
+            "confidence": 0.7,
+            "assumptions": ["Rates fall"],
+            "evidence_links": ["kb-1"],
+        },
+    )
+    assert prediction.status_code == 201
+
+    report = client.get(f"/scenarios/{gold['id']}/report")
+    assert report.status_code == 200
+    assert "# Gold outlook" in report.text
+    assert "Gold base case remains constructive." in report.text
+    assert "- base: 55%" in report.text
+
+
 def test_model_config_patch_updates_local_profiles():
     client = api_client()
 
