@@ -29,6 +29,7 @@ const graphPage = await readFile(new URL("../app/graph/page.tsx", import.meta.ur
 const graphCanvas = await readFile(new URL("../src/components/graph-explorer-canvas.tsx", import.meta.url), "utf8");
 const runsPage = await readFile(new URL("../app/runs/page.tsx", import.meta.url), "utf8");
 const runDetail = await readFile(new URL("../app/runs/[id]/page.tsx", import.meta.url), "utf8");
+const calibrationPage = await readFile(new URL("../app/calibration/page.tsx", import.meta.url), "utf8");
 for (const needle of ["GET /scenarios?q=&status=", "Create and open", "Latest prediction"]) {
   if (!scenariosPage.includes(needle)) throw new Error(`missing B.2 scenarios list affordance: ${needle}`);
 }
@@ -52,5 +53,8 @@ for (const needle of ["GET /runs?filters", "failure_state", "Run timeline", "Ret
 }
 for (const needle of ["GET /runs/{id}/messages", "GET /runs/{id}/related", "Model invocations", "Input JSON", "Output JSON", "Related records", "Retry through backend"]){
   if (!runDetail.includes(needle)) throw new Error(`missing B.5 run detail affordance: ${needle}`);
+}
+for (const needle of ["GET /calibration/summary", "GET /feedback-entries", "GET /outcome-checks", "POST /predictions/{id}/resolve", "Resolve prediction with feedback", "Confidence vs observed frequency chart", "Resolved predictions table", "Miss analysis and root-cause detail drawer", "Trigger re-prediction"]){
+  if (!calibrationPage.includes(needle)) throw new Error(`missing B.6 calibration affordance: ${needle}`);
 }
 console.log(`Route smoke passed for ${routes.length} routes, ${shared.length} components, and ${modules.length} API modules.`);

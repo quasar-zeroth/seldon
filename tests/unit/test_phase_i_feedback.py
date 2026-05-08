@@ -131,3 +131,48 @@ def test_feedback_api_runs_real_phase_i_workflow(tmp_path):
     summary = client.get("/calibration/summary").json()
     assert summary["resolved_predictions"] == 1
     assert summary["calibration_buckets"]
+
+
+def test_prediction_resolution_endpoint_updates_calibration_and_can_queue_reprediction(tmp_path):
+    factory = session_factory()
+    client = TestClient(create_app(SeldonConfig(data_dir=tmp_path), session_factory=factory))
+    scenario = client.post("/scenarios", json={"name": "Rates outlook", "target_question": "Will rates fall?", "time_horizon": "1 quarter"}).json()
+    with factory() as db:
+        with db.begin():
+            prediction = ScenarioRepository(db).create_prediction(
+                scenario_id=scenario["id"],
+                statement="Will rates fall?",
+                timeframe="1 quarter",
+                resolution_criteria="Resolve using central bank decision.",
+                probabilities={"fall": 0.7, "hold": 0.2, "rise": 0.1},
+                confidence=0.74,
+                assumptions=["Inflation continues cooling"],
+                status="active",
+            )
+            prediction_id = prediction.id
+
+    response = client.post(
+        f"/predictions/{prediction_id}/resolve",
+        json={
+            "actual_outcome": "Rates were held after inflation reaccelerated.",
+            "resolved_outcome_key": "hold",
+            "resolution_confidence": 0.95,
+            "missed_factors": ["inflation reacceleration"],
+            "failed_assumptions": ["Inflation continues cooling"],
+            "notes": "Feedback should invalidate the failed assumption and refresh the forecast.",
+            "update_kb": True,
+            "trigger_reprediction": True,
+        },
+    )
+
+    assert response.status_code == 202
+    body = response.json()
+    assert body["feedback"]["outcome_check"]["resolved_outcome_key"] == "hold"
+    assert body["reprediction_job"]["kind"] == "phase"
+    assert body["reprediction_job"]["payload"]["phase"] == "prediction"
+
+    prediction = client.get(f"/predictions/{prediction_id}").json()
+    assert prediction["status"] == "resolved"
+    assert prediction["calibration_result"]["probability_assigned"] == 0.2
+    assert client.get("/feedback-entries").json()[0]["missed_factors"] == ["inflation reacceleration"]
+    assert client.get("/calibration/summary").json()["resolved_predictions"] == 1

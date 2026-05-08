@@ -116,6 +116,19 @@ class FeedbackRequest(BaseModel):
     update_kb: bool = True
 
 
+class PredictionResolutionRequest(BaseModel):
+    actual_outcome: str
+    resolved_outcome_key: str
+    resolution_confidence: float = Field(default=1.0, ge=0.0, le=1.0)
+    source_references: list[str] = Field(default_factory=list)
+    notes: str = ""
+    missed_factors: list[str] = Field(default_factory=list)
+    failed_assumptions: list[str] = Field(default_factory=list)
+    graph_corrections: list[dict[str, Any]] = Field(default_factory=list)
+    update_kb: bool = True
+    trigger_reprediction: bool = False
+
+
 def _error(code: str, message: str, *, details: Any | None = None, http_status: int = 400) -> JSONResponse:
     return JSONResponse(status_code=http_status, content={"error": {"code": code, "message": message, "details": details}})
 
@@ -591,6 +604,41 @@ def create_app(
         assert row is not None
         data = _row(row)
         data["feedback"] = output.model_dump(mode="json")
+        return data
+
+    @app.post("/predictions/{prediction_id}/resolve", status_code=202)
+    def resolve_prediction(
+        prediction_id: str,
+        payload: PredictionResolutionRequest,
+        db: Session = Depends(get_session_dep),
+        cfg: SeldonConfig = Depends(get_config_dep),
+        llm: OpenRouterClient = Depends(get_llm_dep),
+    ) -> dict[str, Any]:
+        with db.begin():
+            prediction = db.get(ScenarioPrediction, prediction_id)
+            if prediction is None:
+                raise not_found("scenario_prediction", prediction_id)
+            feedback_payload = FeedbackInput(
+                prediction_id=prediction_id,
+                actual_outcome=payload.actual_outcome,
+                resolved_outcome_key=payload.resolved_outcome_key,
+                resolution_confidence=payload.resolution_confidence,
+                source_references=payload.source_references,
+                notes=payload.notes,
+                missed_factors=payload.missed_factors,
+                failed_assumptions=payload.failed_assumptions,
+                graph_corrections=payload.graph_corrections,
+                update_kb=payload.update_kb,
+            )
+            run_id, output = FeedbackCoordinator(db, config=cfg, llm_client=llm).run(feedback_payload)
+            row = db.get(AgentRun, run_id)
+            reprediction_job = None
+            if payload.trigger_reprediction and prediction.scenario_id:
+                reprediction_job = app_job_queue.enqueue("phase", {"scenario_id": prediction.scenario_id, "phase": "prediction", "request": {}, "triggered_by_feedback_run_id": run_id}).to_dict()
+        assert row is not None
+        data = _row(row)
+        data["feedback"] = output.model_dump(mode="json")
+        data["reprediction_job"] = reprediction_job
         return data
 
     @app.post("/kb/entries", status_code=201)
