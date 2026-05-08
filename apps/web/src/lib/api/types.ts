@@ -17,3 +17,15 @@ export type CalibrationBucket = { bucket: string; count: number; average_confide
 export type CalibrationSummary = { total_predictions?: number; resolved_predictions?: number; brier_score?: number | null; log_score?: number | null; calibration_buckets?: CalibrationBucket[]; buckets?: Array<Record<string, unknown>>; per_agent?: Record<string, Record<string, unknown>>; per_model?: Record<string, Record<string, unknown>>; [key: string]: unknown };
 export type FeedbackEntry = { id: string; scenario_id?: string | null; prediction_id?: string | null; actual_outcome: string; recorded_at: string; comparison: string; missed_factors: string[]; graph_corrections: Array<Record<string, unknown>>; lessons_learned: string };
 export type OutcomeCheck = { id: string; prediction_id: string; scenario_id?: string | null; actual_outcome: string; resolved_outcome_key: string; probability_assigned: number; resolution_confidence: number; source_references: string[]; notes: string; checked_at: string };
+export type SentimentDriftPoint = { id?: string; scenario_id?: string | null; topic: string; sentiment: number; previous_sentiment?: number | null; velocity: number; measured_at: string; evidence_kb_ids?: string[] };
+export type ModelPerformancePoint = { agent: string; model: string; invocations: number; ok: number; errors: number; success_rate: number; average_latency_ms: number; estimated_cost: number; total_tokens: number };
+export type ChartAnalytics = {
+  scenario_id?: string | null;
+  probability_history: Array<Record<string, string | number | null | undefined>>;
+  prediction_confidence: Array<{ prediction_id: string; scenario_id?: string | null; statement: string; confidence: number; status: string; updated_at: string }>;
+  calibration: CalibrationSummary;
+  sentiment_drift: SentimentDriftPoint[];
+  uncertainty: Array<Record<string, string | number | boolean | null | undefined>>;
+  cascade_risks: Array<Record<string, string | number | boolean | null | undefined>>;
+  model_performance: ModelPerformancePoint[];
+};

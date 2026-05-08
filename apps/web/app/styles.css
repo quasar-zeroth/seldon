@@ -79,3 +79,10 @@ pre { max-width: 100%; overflow: auto; color: #cbd5e1; background: rgba(7,10,18,
 .calibration-row b { background: rgba(167, 139, 250, .72); mix-blend-mode: screen; }
 .table-list { display: grid; gap: 2px; }
 @media (max-width: 680px) { .calibration-row { grid-template-columns: 1fr; } }
+.charts-grid { display: grid; gap: 16px; }
+.chart-card { border: 1px solid rgba(148, 163, 184, .16); border-radius: 16px; padding: 14px; background: rgba(7,10,18,.28); }
+.chart-frame { min-height: 260px; }
+.chart-frame .empty { min-height: 220px; display: grid; align-content: center; }
+.recharts-wrapper text { fill: #a7b0c8; font-size: 12px; }
+.recharts-cartesian-grid line { stroke: rgba(148, 163, 184, .18); }
+.recharts-default-tooltip { background: rgba(7, 10, 18, .95) !important; border: 1px solid rgba(148, 163, 184, .28) !important; border-radius: 12px; color: #eef2ff; }

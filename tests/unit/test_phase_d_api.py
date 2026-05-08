@@ -330,3 +330,54 @@ def test_graph_explorer_filters_mutations_snapshots_and_merge_decisions():
     assert rejected.json()["status"] == "rejected"
     audit = client.get("/audit-log", params={"entity_type": "graph_merge_proposal", "entity_id": "proposal-1"}).json()
     assert audit[0]["action"] == "approve"
+
+
+def test_chart_analytics_endpoint_aggregates_persisted_visualization_records():
+    from seldon.data.models import AdvancedAnalysis, SentimentDrift
+
+    engine = make_engine("sqlite:///:memory:")
+    create_all(engine)
+    factory = make_session_factory(engine)
+    client = TestClient(create_app(SeldonConfig(), session_factory=factory))
+
+    scenario = client.post("/scenarios", json={"name": "Analytics scenario", "target_question": "Will charts work?"}).json()
+    prediction = client.post(
+        "/predictions",
+        json={
+            "scenario_id": scenario["id"],
+            "statement": "Charts should render from persisted rows.",
+            "probabilities": {"bull": 0.4, "base": 0.4, "bear": 0.2},
+            "confidence": 0.64,
+            "probability_history": [
+                {"timestamp": "2026-01-01T00:00:00Z", "bull": 0.3, "base": 0.5, "bear": 0.2, "confidence": 0.6},
+                {"timestamp": "2026-01-02T00:00:00Z", "bull": 0.4, "base": 0.4, "bear": 0.2, "confidence": 0.64},
+            ],
+            "status": "active",
+        },
+    ).json()
+    run = client.post("/runs", json={"agent_id": "prediction_coordinator", "phase": "prediction", "status": "completed", "input": {"scenario_id": scenario["id"]}}).json()
+    client.post(f"/runs/{run['id']}/model-invocations", json={"model": "test/model", "latency_ms": 120, "usage": {"total_tokens": 99}, "estimated_cost": 0.02, "ok": True})
+
+    with factory() as db:
+        with db.begin():
+            db.add(SentimentDrift(scenario_id=scenario["id"], topic="charts", sentiment=0.25, previous_sentiment=0.1, velocity=0.15, evidence_kb_ids=[]))
+            db.add(
+                AdvancedAnalysis(
+                    prediction_id=prediction["id"],
+                    scenario_id=scenario["id"],
+                    uncertainty={"factor": "policy surprise", "probability": 0.35, "impact": 0.8},
+                    cascade_risks=[{"risk": "liquidity shock", "probability": 0.2, "impact": 0.7}],
+                )
+            )
+
+    response = client.get("/analytics/charts", params={"scenario_id": scenario["id"]})
+    assert response.status_code == 200
+    body = response.json()
+    assert body["scenario_id"] == scenario["id"]
+    assert len(body["probability_history"]) == 2
+    assert body["prediction_confidence"][0]["confidence"] == 0.64
+    assert body["sentiment_drift"][0]["topic"] == "charts"
+    assert body["uncertainty"][0]["factor"] == "policy surprise"
+    assert body["cascade_risks"][0]["risk"] == "liquidity shock"
+    assert body["model_performance"][0]["agent"] == "prediction_coordinator"
+    assert body["model_performance"][0]["total_tokens"] == 99

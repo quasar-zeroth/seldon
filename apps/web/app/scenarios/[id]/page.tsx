@@ -2,7 +2,8 @@ import { revalidatePath } from "next/cache";
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { PageHeader, Card, EmptyState, EndpointList, StatusBadge, EvidencePill, RunStatus, ConfirmMutationDialog, MetricCard } from "../../../src/components/ui";
-import { scenariosApi, predictionsApi, runsApi, graphApi, jobsApi, type ScenarioPrediction } from "../../../src/lib/api";
+import { ScenarioAnalyticsCharts } from "../../../src/components/charts-dashboard";
+import { scenariosApi, predictionsApi, runsApi, graphApi, jobsApi, analyticsApi, type ScenarioPrediction } from "../../../src/lib/api";
 
 const phases = ["context_gathering", "extraction", "graph_construction", "prediction"] as const;
 
@@ -56,12 +57,13 @@ function probabilityEntries(prediction?: ScenarioPrediction) {
 }
 
 export default async function ScenarioDetail({ params, searchParams }: { params: { id: string }; searchParams?: { job_id?: string; advanced_run?: string } }) {
-  const [scenario, predictions, runs, nodes, jobs] = await Promise.all([
+  const [scenario, predictions, runs, nodes, jobs, analytics] = await Promise.all([
     scenariosApi.get(params.id),
     predictionsApi.list(params.id),
     runsApi.list(),
     graphApi.nodes(),
     jobsApi.list(),
+    analyticsApi.charts(params.id),
   ]);
   const latest = predictions[0];
   const [versions, evidenceRows] = latest ? await Promise.all([predictionsApi.versions(latest.id), predictionsApi.evidence(latest.id)]) : [[], []];
@@ -77,7 +79,7 @@ export default async function ScenarioDetail({ params, searchParams }: { params:
       status={<StatusBadge status={scenario.status} />}
       action={<a className="button" href={scenariosApi.reportHref(scenario.id)}>Download backend report</a>}
     />
-    <EndpointList endpoints={["GET /scenarios/{id}", "PATCH /scenarios/{id}", "GET /predictions?scenario_id=...", "GET /predictions/{id}/versions", "GET /predictions/{id}/evidence", "POST /scenarios/{id}/jobs/{phase}", "GET /ops/jobs", "GET /runs", "POST /predictions/{id}/run-advanced-intelligence", "POST /scenarios/{id}/run-feedback", "GET /scenarios/{id}/report"]} />
+    <EndpointList endpoints={["GET /scenarios/{id}", "PATCH /scenarios/{id}", "GET /predictions?scenario_id=...", "GET /predictions/{id}/versions", "GET /predictions/{id}/evidence", "POST /scenarios/{id}/jobs/{phase}", "GET /ops/jobs", "GET /runs", "POST /predictions/{id}/run-advanced-intelligence", "POST /scenarios/{id}/run-feedback", "GET /scenarios/{id}/report", "GET /analytics/charts?scenario_id=..."]} />
     <section className="grid">
       <MetricCard label="Timeframe" value={latest?.timeframe || scenario.time_horizon || "—"} />
       <MetricCard label="Confidence" value={latest ? `${Math.round(latest.confidence * 100)}%` : "—"} />
@@ -126,6 +128,9 @@ export default async function ScenarioDetail({ params, searchParams }: { params:
           {searchParams?.advanced_run ? <p className="muted">Advanced run queued: {searchParams.advanced_run}</p> : null}
           <form action={feedbackAction} className="form-stack"><input type="hidden" name="scenario_id" value={scenario.id} /><input type="hidden" name="prediction_id" value={latest.id} /><input name="actual_outcome" placeholder="Actual outcome" required /><select name="resolved_outcome_key"><option value="bull">Bull</option><option value="base">Base</option><option value="bear">Bear</option></select><textarea name="notes" placeholder="Feedback notes" rows={2} /><ConfirmMutationDialog label="Resolve prediction with feedback"><button className="button" type="submit">Run feedback</button></ConfirmMutationDialog></form>
         </div> : <EmptyState detail="Generate a prediction before running advanced intelligence or feedback." />}
+      </Card>
+      <Card title="Charts and analytical visualizations">
+        <ScenarioAnalyticsCharts prediction={latest} analytics={analytics} />
       </Card>
       <Card title="Scenario history and versions">
         {latest?.probability_history.length ? latest.probability_history.map((point, index) => <pre key={index}>{JSON.stringify(point, null, 2)}</pre>) : <p className="muted">No probability history stored yet.</p>}

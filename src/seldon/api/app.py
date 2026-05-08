@@ -1214,6 +1214,88 @@ def create_app(
     def calibration_summary(db: Session = Depends(get_session_dep)) -> dict[str, Any]:
         return compute_calibration_summary(db).model_dump(mode="json")
 
+    @app.get("/analytics/charts")
+    def chart_analytics(scenario_id: str | None = None, db: Session = Depends(get_session_dep)) -> dict[str, Any]:
+        prediction_stmt = select(ScenarioPrediction).order_by(ScenarioPrediction.updated_at.desc())
+        if scenario_id:
+            prediction_stmt = prediction_stmt.where(ScenarioPrediction.scenario_id == scenario_id)
+        predictions = list(db.scalars(prediction_stmt))
+        prediction_ids = {prediction.id for prediction in predictions}
+
+        probability_history: list[dict[str, Any]] = []
+        prediction_confidence: list[dict[str, Any]] = []
+        for prediction in predictions:
+            prediction_confidence.append({
+                "prediction_id": prediction.id,
+                "scenario_id": prediction.scenario_id,
+                "statement": prediction.statement,
+                "confidence": prediction.confidence,
+                "status": prediction.status,
+                "updated_at": prediction.updated_at.isoformat(),
+            })
+            for index, point in enumerate(prediction.probability_history or []):
+                row = dict(point) if isinstance(point, dict) else {"value": point}
+                row.setdefault("prediction_id", prediction.id)
+                row.setdefault("scenario_id", prediction.scenario_id)
+                row.setdefault("statement", prediction.statement)
+                row.setdefault("sequence", index)
+                probability_history.append(row)
+
+        sentiment_stmt = select(SentimentDrift).order_by(SentimentDrift.measured_at)
+        if scenario_id:
+            sentiment_stmt = sentiment_stmt.where(SentimentDrift.scenario_id == scenario_id)
+        sentiment_drift = [_row(row) for row in db.scalars(sentiment_stmt)]
+
+        advanced_stmt = select(AdvancedAnalysis).order_by(AdvancedAnalysis.created_at.desc())
+        if scenario_id:
+            advanced_stmt = advanced_stmt.where(AdvancedAnalysis.scenario_id == scenario_id)
+        advanced_rows = [row for row in db.scalars(advanced_stmt) if not prediction_ids or row.prediction_id in prediction_ids]
+        uncertainty: list[dict[str, Any]] = []
+        cascade_risks: list[dict[str, Any]] = []
+        for analysis in advanced_rows:
+            uncertainty_row = dict(analysis.uncertainty or {})
+            uncertainty_row.update({"analysis_id": analysis.id, "prediction_id": analysis.prediction_id, "scenario_id": analysis.scenario_id, "created_at": analysis.created_at.isoformat()})
+            uncertainty.append(uncertainty_row)
+            for index, risk in enumerate(analysis.cascade_risks or []):
+                risk_row = dict(risk) if isinstance(risk, dict) else {"risk": risk}
+                risk_row.update({"analysis_id": analysis.id, "prediction_id": analysis.prediction_id, "scenario_id": analysis.scenario_id, "sequence": index})
+                cascade_risks.append(risk_row)
+
+        runs_by_id = {run.id: run for run in db.scalars(select(AgentRun))}
+        model_groups: dict[str, dict[str, Any]] = {}
+        for invocation in db.scalars(select(ModelInvocation)):
+            run = runs_by_id.get(invocation.agent_run_id or "")
+            if scenario_id and run is not None:
+                run_scenario_id = (run.input or {}).get("scenario_id") or (run.input or {}).get("payload", {}).get("scenario_id")
+                if run_scenario_id != scenario_id:
+                    continue
+            key = f"{run.agent_id if run else invocation.agent or 'unknown'}::{invocation.model}"
+            group = model_groups.setdefault(key, {"agent": run.agent_id if run else invocation.agent or "unknown", "model": invocation.model, "invocations": 0, "ok": 0, "errors": 0, "latency_ms_total": 0, "estimated_cost": 0.0, "total_tokens": 0})
+            group["invocations"] += 1
+            group["ok"] += 1 if invocation.ok else 0
+            group["errors"] += 0 if invocation.ok else 1
+            group["latency_ms_total"] += invocation.latency_ms or 0
+            group["estimated_cost"] += invocation.estimated_cost or 0.0
+            usage = invocation.usage or {}
+            group["total_tokens"] += int(usage.get("total_tokens") or usage.get("totalTokens") or 0)
+        model_performance = []
+        for group in model_groups.values():
+            invocations = group["invocations"] or 1
+            group["success_rate"] = group["ok"] / invocations
+            group["average_latency_ms"] = group["latency_ms_total"] / invocations
+            model_performance.append(group)
+
+        return {
+            "scenario_id": scenario_id,
+            "probability_history": probability_history,
+            "prediction_confidence": prediction_confidence,
+            "calibration": compute_calibration_summary(db).model_dump(mode="json"),
+            "sentiment_drift": sentiment_drift,
+            "uncertainty": uncertainty,
+            "cascade_risks": cascade_risks,
+            "model_performance": model_performance,
+        }
+
     @app.post("/ops/jobs", status_code=202)
     def enqueue_job(payload: dict[str, Any]) -> dict[str, Any]:
         kind = payload.get("kind")

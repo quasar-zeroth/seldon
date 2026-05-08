@@ -1,7 +1,8 @@
 import Link from "next/link";
 import { revalidatePath } from "next/cache";
 import { PageHeader, Card, EmptyState, EndpointList, MetricCard, StatusBadge, ConfirmMutationDialog } from "../../src/components/ui";
-import { calibrationApi, predictionsApi, scenariosApi } from "../../src/lib/api";
+import { CalibrationAnalyticsCharts } from "../../src/components/charts-dashboard";
+import { calibrationApi, predictionsApi, scenariosApi, analyticsApi } from "../../src/lib/api";
 import type { CalibrationBucket, FeedbackEntry, OutcomeCheck, ScenarioPrediction } from "../../src/lib/api/types";
 
 function csv(value: FormDataEntryValue | null) {
@@ -97,12 +98,13 @@ function ResolvedTable({ predictions, checks }: { predictions: ScenarioPredictio
 }
 
 export default async function CalibrationPage() {
-  const [summary, predictions, feedbackEntries, outcomeChecks, scenarios] = await Promise.all([
+  const [summary, predictions, feedbackEntries, outcomeChecks, scenarios, analytics] = await Promise.all([
     calibrationApi.summary(),
     predictionsApi.list(),
     calibrationApi.feedbackEntries(),
     calibrationApi.outcomeChecks(),
     scenariosApi.list(),
+    analyticsApi.charts(),
   ]);
   const buckets = (summary.calibration_buckets ?? summary.buckets ?? []) as CalibrationBucket[];
   const resolvedCount = summary.resolved_predictions ?? outcomeChecks.length;
@@ -112,7 +114,7 @@ export default async function CalibrationPage() {
 
   return <>
     <PageHeader title="Calibration" subtitle="Resolve outcomes, inspect feedback/root-cause records, and watch backend calibration update from persisted prediction state." />
-    <EndpointList endpoints={["GET /calibration/summary", "GET /feedback-entries", "GET /outcome-checks", "POST /predictions/{id}/resolve", "POST /scenarios/{scenario_id}/run-feedback"]} />
+    <EndpointList endpoints={["GET /calibration/summary", "GET /feedback-entries", "GET /outcome-checks", "GET /analytics/charts", "POST /predictions/{id}/resolve", "POST /scenarios/{scenario_id}/run-feedback"]} />
     <section className="grid">
       <MetricCard label="Resolved predictions" value={String(resolvedCount)} hint={`${predictions.length} total prediction(s) loaded`} />
       <MetricCard label="Brier score" value={score(summary.brier_score)} hint="Lower is better; 0 is perfect." />
@@ -125,8 +127,9 @@ export default async function CalibrationPage() {
     </div>
 
     <section className="wide-grid">
-      <Card title="Confidence vs observed frequency chart">
-        <CalibrationChart buckets={buckets} />
+      <Card title="Calibration charts and analytical visualizations">
+        <CalibrationAnalyticsCharts analytics={analytics} />
+        <details className="timeline-item"><summary>Raw confidence bucket fallback</summary><CalibrationChart buckets={buckets} /></details>
       </Card>
       <Card title="Resolve prediction with feedback">
         <form action={resolvePredictionAction} className="form-stack">

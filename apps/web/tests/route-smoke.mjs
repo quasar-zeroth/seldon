@@ -13,7 +13,7 @@ const routes = [
   "app/settings/page.tsx",
 ];
 const shared = ["PageHeader", "StatusBadge", "MetricCard", "EvidencePill", "RunStatus", "EmptyState", "ErrorState", "LoadingSkeleton", "ConfirmMutationDialog", "AuditTrail", "SourceLink"];
-const modules = ["scenarios", "kb", "graph", "runs", "predictions", "calibration", "settings", "jobs"];
+const modules = ["scenarios", "kb", "graph", "runs", "predictions", "calibration", "settings", "jobs", "analytics"];
 
 await Promise.all(routes.map((route) => access(new URL(`../${route}`, import.meta.url))));
 const ui = await readFile(new URL("../src/components/ui.tsx", import.meta.url), "utf8");
@@ -30,10 +30,11 @@ const graphCanvas = await readFile(new URL("../src/components/graph-explorer-can
 const runsPage = await readFile(new URL("../app/runs/page.tsx", import.meta.url), "utf8");
 const runDetail = await readFile(new URL("../app/runs/[id]/page.tsx", import.meta.url), "utf8");
 const calibrationPage = await readFile(new URL("../app/calibration/page.tsx", import.meta.url), "utf8");
+const chartsDashboard = await readFile(new URL("../src/components/charts-dashboard.tsx", import.meta.url), "utf8");
 for (const needle of ["GET /scenarios?q=&status=", "Create and open", "Latest prediction"]) {
   if (!scenariosPage.includes(needle)) throw new Error(`missing B.2 scenarios list affordance: ${needle}`);
 }
-for (const needle of ["PATCH /scenarios/{id}", "Download backend report", "Run advanced intelligence", "Resolve prediction with feedback", "Scenario history and versions"]) {
+for (const needle of ["PATCH /scenarios/{id}", "Download backend report", "Run advanced intelligence", "Resolve prediction with feedback", "Scenario history and versions", "GET /analytics/charts?scenario_id=...", "Charts and analytical visualizations"]) {
   if (!scenarioDetail.includes(needle)) throw new Error(`missing B.2 scenario detail affordance: ${needle}`);
 }
 for (const needle of ["GET /kb/search?filters", "Semantic search", "current_only", "Create and inspect", "open contradiction"]){
@@ -54,7 +55,10 @@ for (const needle of ["GET /runs?filters", "failure_state", "Run timeline", "Ret
 for (const needle of ["GET /runs/{id}/messages", "GET /runs/{id}/related", "Model invocations", "Input JSON", "Output JSON", "Related records", "Retry through backend"]){
   if (!runDetail.includes(needle)) throw new Error(`missing B.5 run detail affordance: ${needle}`);
 }
-for (const needle of ["GET /calibration/summary", "GET /feedback-entries", "GET /outcome-checks", "POST /predictions/{id}/resolve", "Resolve prediction with feedback", "Confidence vs observed frequency chart", "Resolved predictions table", "Miss analysis and root-cause detail drawer", "Trigger re-prediction"]){
+for (const needle of ["GET /calibration/summary", "GET /feedback-entries", "GET /outcome-checks", "GET /analytics/charts", "POST /predictions/{id}/resolve", "Resolve prediction with feedback", "Calibration charts and analytical visualizations", "Resolved predictions table", "Miss analysis and root-cause detail drawer", "Trigger re-prediction"]){
   if (!calibrationPage.includes(needle)) throw new Error(`missing B.6 calibration affordance: ${needle}`);
+}
+for (const needle of ["recharts", "Probability history chart", "Prediction confidence chart", "Calibration curve and bucket chart", "Sentiment drift chart", "Uncertainty / cascade-risk visualization", "Model/profile performance by agent type", "EmptyState", "data-testid=\"b7-scenario-analytics-charts\""]) {
+  if (!chartsDashboard.includes(needle)) throw new Error(`missing B.7 chart capability: ${needle}`);
 }
 console.log(`Route smoke passed for ${routes.length} routes, ${shared.length} components, and ${modules.length} API modules.`);
