@@ -121,6 +121,12 @@ def _prediction(db: Any, prediction_id: str) -> ScenarioPrediction:
     return prediction
 
 
+RED_TEAM_SYSTEM = """You are The Seldon Project's adversarial red-team gate.
+Stress-test the prediction before activation. Identify the strongest counterargument,
+pivotal assumption, concrete objections, and whether activation should proceed, need review, or be blocked.
+Return only JSON matching the RedTeamOutput schema."""
+
+
 class AdversarialRedTeamAgent(AgentBase[AdvancedIntelligenceInput, RedTeamOutput]):
     agent_id = "adversarial_red_team_agent"
     phase = "advanced_intelligence"
@@ -128,6 +134,31 @@ class AdversarialRedTeamAgent(AgentBase[AdvancedIntelligenceInput, RedTeamOutput
 
     def _run(self, payload: AdvancedIntelligenceInput, *, run_id: str, parent_run_id: str | None) -> RedTeamOutput:
         prediction = _prediction(self.db, payload.prediction_id)
+        if self.llm_client is not None:
+            try:
+                result = self.llm_complete_json(
+                    [
+                        {
+                            "role": "user",
+                            "content": (
+                                "Red-team this prediction.\n"
+                                f"Prediction: {row_to_dict(prediction)}\n"
+                                f"Max objections: {payload.max_items}"
+                            ),
+                        }
+                    ],
+                    run_id=run_id,
+                    system=RED_TEAM_SYSTEM,
+                    schema=RedTeamOutput,
+                    repair_retries=1,
+                    min_confidence=None,
+                    escalation_profiles=("reasoning",),
+                )
+                output = RedTeamOutput.model_validate(result)
+                return output.model_copy(update={"objections": output.objections[: payload.max_items]})
+            except Exception as exc:
+                self.runs.add_message(run_id, "system", "AdversarialRedTeamAgent LLM path failed; using deterministic fallback.", payload={"error": str(exc)})
+
         probs = _probabilities(prediction)
         top = max(probs, key=probs.get) if probs else "top scenario"
         weak_assumption = (prediction.assumptions or [None])[-1]

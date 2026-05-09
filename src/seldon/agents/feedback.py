@@ -107,6 +107,12 @@ def _confidence_bucket(confidence: float) -> str:
     return f"{low:.1f}-{high:.1f}"
 
 
+ROOT_CAUSE_SYSTEM = """You are The Seldon Project's Root-Cause Analyzer.
+Compare a resolved prediction with the actual outcome. Diagnose underweighted outcomes,
+missed factors, failed assumptions, concrete lessons, and assumption diagnostics.
+Return only JSON matching the RootCauseOutput schema."""
+
+
 class OutcomeMonitor(AgentBase[FeedbackInput, OutcomeMonitorOutput]):
     agent_id = "outcome_monitor"
     phase = "feedback"
@@ -153,6 +159,30 @@ class RootCauseAnalyzer(AgentBase[FeedbackInput, RootCauseOutput]):
         prediction = self.db.get(ScenarioPrediction, payload.prediction_id)
         if prediction is None:
             raise KeyError(f"scenario_prediction not found: {payload.prediction_id}")
+        if self.llm_client is not None:
+            try:
+                result = self.llm_complete_json(
+                    [
+                        {
+                            "role": "user",
+                            "content": (
+                                "Analyze why this prediction resolved as it did.\n"
+                                f"Prediction: {row_to_dict(prediction)}\n"
+                                f"Feedback: {payload.model_dump(mode='json')}"
+                            ),
+                        }
+                    ],
+                    run_id=run_id,
+                    system=ROOT_CAUSE_SYSTEM,
+                    schema=RootCauseOutput,
+                    repair_retries=1,
+                    min_confidence=None,
+                    escalation_profiles=("reasoning",),
+                )
+                return RootCauseOutput.model_validate(result)
+            except Exception as exc:
+                self.runs.add_message(run_id, "system", "RootCauseAnalyzer LLM path failed; using deterministic fallback.", payload={"error": str(exc)})
+
         probabilities = _prediction_probabilities(prediction)
         assigned = probabilities.get(payload.resolved_outcome_key, 0.0)
         top_key = max(probabilities, key=probabilities.get) if probabilities else None

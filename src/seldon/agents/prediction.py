@@ -162,6 +162,12 @@ def _normalise_probabilities(values: dict[str, float]) -> dict[str, float]:
     return rounded
 
 
+SCENARIO_SYNTHESIZER_SYSTEM = """You are The Seldon Project's Scenario Synthesizer.
+Synthesize 3-7 coherent, mutually distinct forecast scenarios from node forecasts, traversal results, and instability analysis.
+Probabilities must sum to 1.0, confidence must reflect evidence quality, and assumptions/drivers must be auditable.
+Do not force bull/base/bear labels unless they are the best natural scenario names. Return only JSON matching the ScenarioSynthesisOutput schema."""
+
+
 class NodeStatePredictor(AgentBase[NodeForecastInput, NodeStateForecast]):
     agent_id = "node_state_predictor"
     phase = "prediction"
@@ -247,6 +253,32 @@ class ScenarioSynthesizer(AgentBase[ScenarioSynthesisInput, ScenarioSynthesisOut
         scenario = self.db.get(Scenario, payload.scenario_id)
         if scenario is None:
             raise KeyError(f"scenario not found: {payload.scenario_id}")
+        if self.llm_client is not None:
+            try:
+                result = self.llm_complete_json(
+                    [
+                        {
+                            "role": "user",
+                            "content": (
+                                "Synthesize forecast scenarios from this prediction context.\n"
+                                f"Scenario: {scenario.name}\nQuestion: {payload.question}\nTimeframe: {payload.timeframe or scenario.time_horizon}\n"
+                                f"Node forecasts: {[f.model_dump(mode='json') for f in payload.node_forecasts]}\n"
+                                f"Traversal: {payload.traversal.model_dump(mode='json')}\n"
+                                f"Instability: {payload.instability.model_dump(mode='json')}"
+                            ),
+                        }
+                    ],
+                    run_id=run_id,
+                    system=SCENARIO_SYNTHESIZER_SYSTEM,
+                    schema=ScenarioSynthesisOutput,
+                    repair_retries=1,
+                    min_confidence=0.4,
+                    escalation_profiles=("reasoning",),
+                )
+                return ScenarioSynthesisOutput.model_validate(result)
+            except Exception as exc:
+                self.runs.add_message(run_id, "system", "ScenarioSynthesizer LLM path failed; using deterministic fallback.", payload={"error": str(exc)})
+
         signal = payload.traversal.aggregate_signal
         instability = payload.instability.overall_instability
         bull = 0.33 + max(0.0, signal) * 0.22 - instability * 0.08

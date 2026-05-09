@@ -124,6 +124,12 @@ def _entry_text(entries: list[KBEntry]) -> str:
     return " ".join(entry.content.lower() for entry in entries)
 
 
+RELATIONSHIP_DETECTOR_SYSTEM = """You are The Seldon Project's Pairwise Relationship Detector.
+Given two ERG nodes and shared evidence, return one evidence-reasoned relationship candidate.
+Explain the mechanism, lag, direction, strength, confidence, and evidence sufficiency.
+Use only allowed relationship_type and direction values. Return only JSON matching the RelationshipCandidate schema."""
+
+
 class PairwiseRelationshipDetector(AgentBase[NodePairCandidate, RelationshipCandidate]):
     agent_id = "pairwise_relationship_detector"
     phase = "graph_construction"
@@ -136,6 +142,43 @@ class PairwiseRelationshipDetector(AgentBase[NodePairCandidate, RelationshipCand
         if source is None or target is None:
             raise KeyError("candidate pair references missing node")
         entries = [entry for entry in (self.db.get(KBEntry, id) for id in payload.evidence_kb_ids) if entry is not None]
+        scenario_ids = sorted(set(source.scenario_ids or []) & set(target.scenario_ids or []))
+        if self.llm_client is not None:
+            try:
+                result = self.llm_complete_json(
+                    [
+                        {
+                            "role": "user",
+                            "content": (
+                                "Detect the best supported relationship for this node pair.\n"
+                                f"Candidate: {payload.model_dump(mode='json')}\n"
+                                f"Source node: {source.name} ({source.type}) - {source.description}\n"
+                                f"Target node: {target.name} ({target.type}) - {target.description}\n"
+                                f"Shared scenario_ids: {scenario_ids}\n"
+                                "Evidence entries:\n"
+                                + "\n".join(f"- {entry.id}: {entry.content[:1000]}" for entry in entries)
+                            ),
+                        }
+                    ],
+                    run_id=run_id,
+                    system=RELATIONSHIP_DETECTOR_SYSTEM,
+                    schema=RelationshipCandidate,
+                    repair_retries=1,
+                    min_confidence=0.4,
+                    escalation_profiles=("reasoning",),
+                )
+                candidate = RelationshipCandidate.model_validate(result)
+                return candidate.model_copy(
+                    update={
+                        "source_node_id": source.id,
+                        "target_node_id": target.id,
+                        "evidence_kb_ids": candidate.evidence_kb_ids or payload.evidence_kb_ids,
+                        "scenario_ids": sorted({*candidate.scenario_ids, *scenario_ids}),
+                    }
+                )
+            except Exception as exc:
+                self.runs.add_message(run_id, "system", "PairwiseRelationshipDetector LLM path failed; using deterministic fallback.", payload={"error": str(exc)})
+
         text = _entry_text(entries)
         rel_type: RelationshipType = "correlates_with"
         direction: Direction = "complex"
@@ -164,7 +207,6 @@ class PairwiseRelationshipDetector(AgentBase[NodePairCandidate, RelationshipCand
             f"{source.name} and {target.name} are linked by {evidence_count} shared scenario evidence item(s). "
             f"Mechanism inferred from evidence: {payload.reason}."
         )
-        scenario_ids = sorted(set(source.scenario_ids or []) & set(target.scenario_ids or []))
         return RelationshipCandidate(
             source_node_id=source.id,
             target_node_id=target.id,

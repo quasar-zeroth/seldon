@@ -21,6 +21,12 @@ from .contracts import (
 )
 
 
+SUMMARIZER_SYSTEM = """You are The Seldon Project's Information Summarizer.
+Extract one compact, audit-friendly KB observation from the supplied source.
+Preserve provenance. Do not invent source URLs, dates, entities, or topics.
+Return only JSON matching the Observation schema."""
+
+
 class QueryDecomposer(AgentBase[ContextGatheringInput, QueryPlan]):
     agent_id = "query_decomposer"
     model_profile = "fast"
@@ -93,6 +99,32 @@ class InformationSummarizer(AgentBase[RetrievalResult, Observation]):
     model_profile = "fast"
 
     def _run(self, payload: RetrievalResult, *, run_id: str, parent_run_id: str | None) -> Observation:
+        if self.llm_client is not None:
+            try:
+                source = payload.sources[0]
+                result = self.llm_complete_json(
+                    [
+                        {
+                            "role": "user",
+                            "content": (
+                                "Summarize this retrieval result as a single KB observation.\n"
+                                f"Query: {payload.query}\n"
+                                f"Source metadata: {source.model_dump(mode='json')}\n"
+                                f"Source content:\n{source.content[:8000]}"
+                            ),
+                        }
+                    ],
+                    run_id=run_id,
+                    system=SUMMARIZER_SYSTEM,
+                    schema=Observation,
+                    repair_retries=1,
+                    min_confidence=0.35,
+                    escalation_profiles=("balanced",),
+                )
+                return Observation.model_validate(result)
+            except Exception as exc:
+                self.runs.add_message(run_id, "system", "InformationSummarizer LLM path failed; using deterministic fallback.", payload={"error": str(exc)})
+
         source = payload.sources[0]
         content = source.content.strip()
         if len(content) > 600:
