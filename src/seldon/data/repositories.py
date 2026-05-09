@@ -8,6 +8,7 @@ from typing import Any, Generic, TypeVar
 
 from sqlalchemy import select, text
 from sqlalchemy.orm import Session
+import networkx as nx
 
 from seldon.kb.vector import EmbeddingProvider, LocalHashEmbeddingProvider, cosine_similarity, pgvector_literal
 
@@ -266,8 +267,11 @@ class GraphRepository:
     def get_node(self, id: str) -> ERGNode | None:
         return self.session.get(ERGNode, id)
 
-    def list_nodes(self) -> list[ERGNode]:
-        return list(self.session.scalars(select(ERGNode)))
+    def list_nodes(self, *, scenario_id: str | None = None) -> list[ERGNode]:
+        nodes = list(self.session.scalars(select(ERGNode)))
+        if scenario_id is not None:
+            nodes = [node for node in nodes if scenario_id in (node.scenario_ids or [])]
+        return nodes
 
     def update_node(self, id: str, **values: Any) -> ERGNode:
         node = self.get_node(id)
@@ -298,11 +302,103 @@ class GraphRepository:
         self.audit.emit("erg_edge", id, "update", before=before, after=row_to_dict(edge))
         return edge
 
-    def list_edges(self, node_id: str | None = None) -> list[ERGEdge]:
+    def list_edges(self, node_id: str | None = None, *, scenario_id: str | None = None) -> list[ERGEdge]:
         stmt = select(ERGEdge)
         if node_id:
             stmt = stmt.where((ERGEdge.source_node_id == node_id) | (ERGEdge.target_node_id == node_id))
-        return list(self.session.scalars(stmt))
+        edges = list(self.session.scalars(stmt))
+        if scenario_id is not None:
+            edges = [edge for edge in edges if scenario_id in (edge.scenario_ids or [])]
+        return edges
+
+    def to_networkx(self, *, scenario_id: str | None = None) -> nx.DiGraph:
+        """Return a directed NetworkX view of persisted ERG rows.
+
+        The DB remains the source of truth; this method builds an in-memory graph
+        for algorithms. Multiple persisted relationship rows between the same
+        ordered node pair are folded into one directed edge with the strongest
+        confidence-weighted relationship as ``weight`` while retaining all
+        source ``edge_ids`` and relationship metadata for auditability.
+        """
+        graph = nx.DiGraph(scenario_id=scenario_id)
+        nodes = self.list_nodes(scenario_id=scenario_id)
+        node_ids = {node.id for node in nodes}
+        for node in nodes:
+            graph.add_node(node.id, **row_to_dict(node))
+        for edge in self.list_edges(scenario_id=scenario_id):
+            if edge.source_node_id not in node_ids or edge.target_node_id not in node_ids:
+                continue
+            weight = max(0.01, edge.strength * edge.confidence)
+            if graph.has_edge(edge.source_node_id, edge.target_node_id):
+                attrs = graph[edge.source_node_id][edge.target_node_id]
+                attrs["weight"] = max(attrs["weight"], weight)
+                attrs["edge_ids"].append(edge.id)
+                attrs["relationships"].append(row_to_dict(edge))
+                attrs["evidence_kb_ids"] = sorted({*attrs.get("evidence_kb_ids", []), *(edge.evidence_kb_ids or [])})
+            else:
+                graph.add_edge(
+                    edge.source_node_id,
+                    edge.target_node_id,
+                    weight=weight,
+                    edge_ids=[edge.id],
+                    relationships=[row_to_dict(edge)],
+                    relationship_type=edge.relationship_type,
+                    direction=edge.direction,
+                    evidence_kb_ids=list(edge.evidence_kb_ids or []),
+                )
+        return graph
+
+    def centrality_scores(self, *, scenario_id: str | None = None) -> dict[str, dict[str, float]]:
+        """Compute reusable graph-algorithm scores for persisted ERG nodes."""
+        graph = self.to_networkx(scenario_id=scenario_id)
+        if not graph.nodes:
+            return {}
+        undirected = graph.to_undirected()
+        degree = nx.degree_centrality(undirected)
+        pagerank = self._pagerank_no_numpy(graph) if graph.number_of_edges() else {node: 1 / graph.number_of_nodes() for node in graph.nodes}
+        betweenness = nx.betweenness_centrality(graph, weight="weight", normalized=True) if graph.number_of_edges() else {node: 0.0 for node in graph.nodes}
+        closeness = nx.closeness_centrality(graph) if graph.number_of_edges() else {node: 0.0 for node in graph.nodes}
+        max_reach = max(1, graph.number_of_nodes() - 1)
+        return {
+            node: {
+                "degree": float(degree.get(node, 0.0)),
+                "pagerank": float(pagerank.get(node, 0.0)),
+                "betweenness": float(betweenness.get(node, 0.0)),
+                "closeness": float(closeness.get(node, 0.0)),
+                "dependency_reach": len(nx.descendants(graph, node)) / max_reach,
+            }
+            for node in graph.nodes
+        }
+
+    @staticmethod
+    def _pagerank_no_numpy(graph: nx.DiGraph, *, alpha: float = 0.85, max_iter: int = 100, tol: float = 1.0e-6) -> dict[str, float]:
+        """Small PageRank implementation that avoids optional numpy/scipy deps."""
+        nodes = list(graph.nodes)
+        if not nodes:
+            return {}
+        n = len(nodes)
+        ranks = {node: 1.0 / n for node in nodes}
+        teleport = (1.0 - alpha) / n
+        outgoing_weight = {
+            node: sum(max(0.0, graph[node][target].get("weight", 1.0)) for target in graph.successors(node))
+            for node in nodes
+        }
+        for _ in range(max_iter):
+            new_ranks = {node: teleport for node in nodes}
+            dangling_rank = alpha * sum(ranks[node] for node in nodes if outgoing_weight[node] == 0.0) / n
+            for node in nodes:
+                new_ranks[node] += dangling_rank
+            for source in nodes:
+                total = outgoing_weight[source]
+                if total == 0.0:
+                    continue
+                for target in graph.successors(source):
+                    weight = max(0.0, graph[source][target].get("weight", 1.0))
+                    new_ranks[target] += alpha * ranks[source] * weight / total
+            if sum(abs(new_ranks[node] - ranks[node]) for node in nodes) < n * tol:
+                return new_ranks
+            ranks = new_ranks
+        return ranks
 
     def export_graph_json(self) -> dict[str, Any]:
         return {"nodes": [row_to_dict(n) for n in self.list_nodes()], "edges": [row_to_dict(e) for e in self.list_edges()]}

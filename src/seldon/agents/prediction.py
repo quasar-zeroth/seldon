@@ -60,6 +60,8 @@ class TraversalStep(BaseModel):
 class GraphTraversalInput(BaseModel):
     scenario_id: str
     node_forecasts: list[NodeStateForecast]
+    max_depth: int = Field(default=3, ge=1, le=8)
+    min_influence: float = Field(default=0.02, ge=0.0, le=1.0)
 
 
 class GraphTraversalOutput(BaseModel):
@@ -201,20 +203,53 @@ class GraphTraversalSimulator(AgentBase[GraphTraversalInput, GraphTraversalOutpu
     model_profile = "balanced"
 
     def _run(self, payload: GraphTraversalInput, *, run_id: str, parent_run_id: str | None) -> GraphTraversalOutput:
-        forecast_ids = {forecast.node_id for forecast in payload.node_forecasts}
-        forecast_direction = {forecast.node_id: forecast.direction for forecast in payload.node_forecasts}
-        steps: list[TraversalStep] = []
-        visited: set[str] = set(forecast_ids)
-        aggregate = 0.0
+        seed_signals = {
+            forecast.node_id: (1.0 if forecast.direction == "up" else -1.0 if forecast.direction == "down" else 0.0) * forecast.confidence
+            for forecast in payload.node_forecasts
+        }
         graph = GraphRepository(self.db)
-        edges = [edge for edge in graph.list_edges() if payload.scenario_id in (edge.scenario_ids or []) and (edge.source_node_id in forecast_ids or edge.target_node_id in forecast_ids)]
+        edges = graph.list_edges(scenario_id=payload.scenario_id)
+        outgoing: dict[str, list[ERGEdge]] = {}
         for edge in edges:
-            source_signal = 1.0 if forecast_direction.get(edge.source_node_id) == "up" else -1.0 if forecast_direction.get(edge.source_node_id) == "down" else 0.0
-            relation_signal = _signed_direction(edge.direction, edge.relationship_type)
-            influence = _clamp(source_signal * relation_signal * edge.strength * edge.confidence, -1.0, 1.0)
-            aggregate += influence
-            visited.update([edge.source_node_id, edge.target_node_id])
-            steps.append(TraversalStep(source_node_id=edge.source_node_id, target_node_id=edge.target_node_id, edge_id=edge.id, relationship_type=edge.relationship_type, direction=edge.direction, influence=influence, confidence=edge.confidence, rationale=edge.description[:240]))
+            outgoing.setdefault(edge.source_node_id, []).append(edge)
+
+        steps: list[TraversalStep] = []
+        visited: set[str] = {node_id for node_id, signal in seed_signals.items() if abs(signal) >= payload.min_influence}
+        frontier: list[tuple[str, float, int, tuple[str, ...]]] = [(node_id, signal, 0, ()) for node_id, signal in seed_signals.items() if abs(signal) >= payload.min_influence]
+        best_signal: dict[str, float] = dict(seed_signals)
+        traversed_edges: set[str] = set()
+        aggregate = 0.0
+
+        while frontier:
+            source_id, source_signal, depth, path = frontier.pop(0)
+            if depth >= payload.max_depth:
+                continue
+            for edge in outgoing.get(source_id, []):
+                relation_signal = _signed_direction(edge.direction, edge.relationship_type)
+                influence = _clamp(source_signal * relation_signal * edge.strength * edge.confidence, -1.0, 1.0)
+                if abs(influence) < payload.min_influence or edge.id in traversed_edges:
+                    continue
+                traversed_edges.add(edge.id)
+                aggregate += influence
+                visited.update([edge.source_node_id, edge.target_node_id])
+                next_path = (*path, edge.target_node_id)
+                steps.append(
+                    TraversalStep(
+                        source_node_id=edge.source_node_id,
+                        target_node_id=edge.target_node_id,
+                        edge_id=edge.id,
+                        relationship_type=edge.relationship_type,
+                        direction=edge.direction,
+                        influence=influence,
+                        confidence=edge.confidence,
+                        rationale=f"Cascade depth {depth + 1}: {edge.description[:210]}",
+                    )
+                )
+                previous = best_signal.get(edge.target_node_id, 0.0)
+                combined = _clamp(previous + influence * (1 - min(0.8, abs(previous))), -1.0, 1.0)
+                best_signal[edge.target_node_id] = combined
+                if edge.target_node_id not in path and depth + 1 < payload.max_depth and abs(combined) >= payload.min_influence:
+                    frontier.append((edge.target_node_id, combined, depth + 1, next_path))
         divisor = max(1, len(steps))
         return GraphTraversalOutput(traversal_log=steps, aggregate_signal=_clamp(aggregate / divisor, -1.0, 1.0), visited_node_ids=sorted(visited))
 

@@ -296,32 +296,59 @@ class ImportanceScorer(AgentBase[dict[str, Any], BaseModel]):  # type: ignore[ty
 
     def _score(self, scenario_id: str) -> list[ImportanceUpdate]:
         graph = GraphRepository(self.db)
-        nodes = [node for node in graph.list_nodes() if scenario_id in (node.scenario_ids or [])]
-        edges = [edge for edge in graph.list_edges() if scenario_id in (edge.scenario_ids or [])]
+        nodes = graph.list_nodes(scenario_id=scenario_id)
+        edges = graph.list_edges(scenario_id=scenario_id)
         if not nodes:
             return []
-        degree: dict[str, float] = {node.id: 0.0 for node in nodes}
+        centrality = graph.centrality_scores(scenario_id=scenario_id)
         edge_conf: dict[str, float] = {node.id: 0.0 for node in nodes}
+        edge_weight: dict[str, float] = {node.id: 0.0 for node in nodes}
         for edge in edges:
             weight = max(0.1, (edge.strength + edge.confidence) / 2)
-            if edge.source_node_id in degree:
-                degree[edge.source_node_id] += weight
+            if edge.source_node_id in edge_conf:
                 edge_conf[edge.source_node_id] += edge.confidence
-            if edge.target_node_id in degree:
-                degree[edge.target_node_id] += weight
+                edge_weight[edge.source_node_id] += weight
+            if edge.target_node_id in edge_conf:
                 edge_conf[edge.target_node_id] += edge.confidence
-        max_degree = max(degree.values()) or 1.0
+                edge_weight[edge.target_node_id] += weight
         max_evidence = max((len(node.kb_entry_ids or []) for node in nodes), default=1) or 1
         max_usage = max((len(node.scenario_ids or []) for node in nodes), default=1) or 1
+        max_pagerank = max((scores.get("pagerank", 0.0) for scores in centrality.values()), default=1.0) or 1.0
         updates: list[ImportanceUpdate] = []
         for node in nodes:
-            degree_score = degree[node.id] / max_degree
+            c = centrality.get(node.id, {})
+            degree_score = c.get("degree", 0.0)
+            pagerank_score = c.get("pagerank", 0.0) / max_pagerank
+            bridge_score = c.get("betweenness", 0.0)
+            reach_score = c.get("dependency_reach", 0.0)
             evidence_score = len(node.kb_entry_ids or []) / max_evidence
             usage_score = len(node.scenario_ids or []) / max_usage
-            confidence_score = min(1.0, edge_conf[node.id] / max(1, degree[node.id])) if degree[node.id] else 0.0
-            score = _clamp(0.45 * degree_score + 0.25 * evidence_score + 0.20 * usage_score + 0.10 * confidence_score)
+            confidence_score = min(1.0, edge_conf[node.id] / max(1.0, edge_weight[node.id])) if edge_weight[node.id] else 0.0
+            score = _clamp(
+                0.24 * degree_score
+                + 0.24 * pagerank_score
+                + 0.16 * reach_score
+                + 0.12 * bridge_score
+                + 0.12 * evidence_score
+                + 0.08 * usage_score
+                + 0.04 * confidence_score
+            )
             graph.update_node(node.id, importance_score=score)
-            updates.append(ImportanceUpdate(node_id=node.id, importance_score=score, components={"degree": degree_score, "evidence": evidence_score, "scenario_usage": usage_score, "edge_confidence": confidence_score}))
+            updates.append(
+                ImportanceUpdate(
+                    node_id=node.id,
+                    importance_score=score,
+                    components={
+                        "degree": degree_score,
+                        "pagerank": pagerank_score,
+                        "dependency_reach": reach_score,
+                        "betweenness": bridge_score,
+                        "evidence": evidence_score,
+                        "scenario_usage": usage_score,
+                        "edge_confidence": confidence_score,
+                    },
+                )
+            )
         return updates
 
 

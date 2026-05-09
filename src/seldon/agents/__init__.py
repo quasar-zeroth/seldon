@@ -64,6 +64,7 @@ from .graph_construction import (
     RelationshipCandidate,
 )
 from .prediction import (
+    GraphTraversalInput,
     GraphTraversalSimulator,
     GraphTraversalOutput,
     InstabilityAnalyzer,
@@ -115,6 +116,7 @@ __all__ = [
     "GraphConstructionOutput",
     "HistoricalAnalogyMatcher",
     "GraphConsistencyChecker",
+    "GraphTraversalInput",
     "GraphTraversalOutput",
     "GraphTraversalSimulator",
     "ImportanceScorer",
