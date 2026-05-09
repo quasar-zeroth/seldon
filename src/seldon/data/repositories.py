@@ -6,10 +6,10 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Generic, TypeVar
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
-from seldon.kb.vector import cosine_similarity, embed_text
+from seldon.kb.vector import EmbeddingProvider, LocalHashEmbeddingProvider, cosine_similarity, pgvector_literal
 
 from .models import (
     AgentMessage,
@@ -115,21 +115,36 @@ class KBRepository(BaseRepository[KBEntry]):
     model = KBEntry
     audit_entity_type = "kb_entry"
 
-    def create_entry(self, *, actor: str = "system", reason: str | None = None, **values: Any) -> KBEntry:
+    def __init__(self, session: Session, audit: AuditRepository | None = None, *, embedding_provider: EmbeddingProvider | None = None):
+        super().__init__(session, audit=audit)
+        self.embedding_provider = embedding_provider or LocalHashEmbeddingProvider()
+
+    def _embed_values(self, values: dict[str, Any]) -> None:
         if values.get("content") and not values.get("content_embedding"):
-            values["content_embedding"] = embed_text(str(values["content"]))
-            values.setdefault("embedding_metadata", {})
-            values["embedding_metadata"] = {**(values.get("embedding_metadata") or {}), "backend": "local_hash", "dimensions": len(values["content_embedding"])}
+            embedding = self.embedding_provider.embed(str(values["content"]))
+            values["content_embedding"] = embedding.vector
+            values["embedding_metadata"] = {**(values.get("embedding_metadata") or {}), **embedding.metadata}
             values.setdefault("vector_index_pointer", f"kb:{values.get('source_url') or values['content'][:32]}")
+
+    def _sync_pgvector_column(self, row: KBEntry) -> None:
+        if self.session.bind is None or self.session.bind.dialect.name != "postgresql" or not row.content_embedding:
+            return
+        self.session.execute(
+            text("UPDATE kb_entries SET content_embedding_vector = CAST(:embedding AS vector) WHERE id = :id"),
+            {"embedding": pgvector_literal(row.content_embedding), "id": row.id},
+        )
+
+    def create_entry(self, *, actor: str = "system", reason: str | None = None, **values: Any) -> KBEntry:
+        self._embed_values(values)
         row = self.create(actor=actor, reason=reason, **values)
+        self._sync_pgvector_column(row)
         self._version(row, actor=actor, reason=reason or "initial create")
         return row
 
     def update_entry(self, id: str, *, actor: str = "system", reason: str | None = None, **values: Any) -> KBEntry:
-        if values.get("content") and not values.get("content_embedding"):
-            values["content_embedding"] = embed_text(str(values["content"]))
-            values["embedding_metadata"] = {**(values.get("embedding_metadata") or {}), "backend": "local_hash", "dimensions": len(values["content_embedding"])}
+        self._embed_values(values)
         row = self.update(id, actor=actor, reason=reason, **values)
+        self._sync_pgvector_column(row)
         row.version += 1
         self.session.flush()
         self._version(row, actor=actor, reason=reason or "update")
@@ -186,11 +201,31 @@ class KBRepository(BaseRepository[KBEntry]):
         return results
 
     def semantic_search(self, query: str, *, limit: int = 10) -> list[KBEntry]:
-        # Phase C.1 adapter boundary: real vector/pgvector backends plug in here.
-        query_embedding = embed_text(query)
+        query_embedding = self.embedding_provider.embed(query).vector
+        if self.session.bind is not None and self.session.bind.dialect.name == "postgresql":
+            rows = self._semantic_search_pgvector(query_embedding, limit=limit)
+            if rows:
+                return rows
         rows = list(self.session.scalars(select(KBEntry)))
         ranked = sorted(rows, key=lambda entry: (cosine_similarity(query_embedding, entry.content_embedding), query.lower() in entry.content.lower()), reverse=True)
         return ranked[:limit]
+
+    def _semantic_search_pgvector(self, query_embedding: list[float], *, limit: int) -> list[KBEntry]:
+        try:
+            result = self.session.execute(
+                text(
+                    "SELECT id FROM kb_entries "
+                    "WHERE content_embedding_vector IS NOT NULL "
+                    "ORDER BY content_embedding_vector <=> CAST(:embedding AS vector) "
+                    "LIMIT :limit"
+                ),
+                {"embedding": pgvector_literal(query_embedding), "limit": limit},
+            )
+            ids = [row[0] for row in result]
+        except Exception:
+            return []
+        by_id = {entry.id: entry for entry in self.session.scalars(select(KBEntry).where(KBEntry.id.in_(ids)))} if ids else {}
+        return [by_id[id] for id in ids if id in by_id]
 
     def decay_scores(self, entries: list[KBEntry], *, as_of: datetime | None = None, half_life_days: float = 30.0) -> dict[str, float]:
         as_of = as_of or datetime.now(timezone.utc)
