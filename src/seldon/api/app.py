@@ -19,7 +19,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from pydantic import BaseModel, Field
 
 from seldon.agents import AdvancedIntelligenceCoordinator, AdvancedIntelligenceInput, ContextGatheringCoordinator, ConvergenceLoopCoordinator, ConvergenceLoopInput, ExtractionCoordinator, FeedbackCoordinator, FeedbackInput, GraphConstructionCoordinator, PredictionCoordinator, compute_calibration_summary
-from seldon.config import SeldonConfig
+from seldon.config import SeldonConfig, config_from_env
 from seldon.data.database import create_all, make_engine, make_session_factory
 from seldon.data.models import (
     AdvancedAnalysis,
@@ -339,6 +339,32 @@ def create_app(
     def health(db: Session = Depends(get_session_dep), llm: OpenRouterClient = Depends(get_llm_dep)) -> dict[str, Any]:
         db.execute(select(1)).scalar_one()
         return {"ok": True, "service": "seldon-api", "llm_default_model": llm.config.default_model}
+
+    @app.get("/ops/metrics")
+    def ops_metrics(db: Session = Depends(get_session_dep)) -> dict[str, Any]:
+        runs = list(db.scalars(select(AgentRun)))
+        invocations = list(db.scalars(select(ModelInvocation)))
+        jobs = app_job_queue.list()
+        return {
+            "runs": {
+                "total": len(runs),
+                "running": sum(1 for run in runs if run.status == "running"),
+                "failed": sum(1 for run in runs if run.status == "failed" or run.error),
+                "completed": sum(1 for run in runs if run.status == "completed"),
+            },
+            "jobs": {
+                "total": len(jobs),
+                "queued": sum(1 for job in jobs if job.status == "queued"),
+                "running": sum(1 for job in jobs if job.status == "running"),
+                "failed": sum(1 for job in jobs if job.status == "failed"),
+                "completed": sum(1 for job in jobs if job.status == "completed"),
+            },
+            "model_invocations": {
+                "total": len(invocations),
+                "errors": sum(1 for invocation in invocations if not invocation.ok),
+                "estimated_cost": sum(invocation.estimated_cost or 0.0 for invocation in invocations),
+            },
+        }
 
     def _config_status(cfg: SeldonConfig) -> dict[str, Any]:
         sqlite_path = cfg.database.sqlite_path if cfg.database.url is None or cfg.database.url.startswith("sqlite") else None
@@ -1533,4 +1559,4 @@ def create_app(
     return app
 
 
-app = create_app()
+app = create_app(config_from_env())

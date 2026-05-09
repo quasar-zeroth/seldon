@@ -1,6 +1,7 @@
 """Configuration models for the seldon package."""
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from pydantic import BaseModel, Field
 
@@ -152,3 +153,24 @@ class SeldonConfig(BaseModel):
     ops: OpsConfig = Field(default_factory=OpsConfig)
 
     model_config = {"arbitrary_types_allowed": True}
+
+
+def config_from_env() -> SeldonConfig:
+    """Build config from documented deployment environment variables."""
+    cfg = SeldonConfig()
+    data_dir = os.getenv("SELDON_DATA_DIR")
+    if data_dir:
+        cfg.data_dir = Path(data_dir)
+        cfg.database.sqlite_path = cfg.data_dir / "seldon.db"
+        cfg.ops.backup_dir = cfg.data_dir / "backups"
+        cfg.ops.vector_index_path = cfg.data_dir / "vector-index"
+    database_url = os.getenv("SELDON_DATABASE_URL") or os.getenv("DATABASE_URL")
+    if database_url:
+        cfg.database.url = database_url
+    cfg.ops.require_api_key = os.getenv("SELDON_REQUIRE_API_KEY", str(cfg.ops.require_api_key)).lower() in {"1", "true", "yes", "on"}
+    cfg.ops.allow_localhost_without_api_key = os.getenv("SELDON_ALLOW_LOCALHOST_WITHOUT_API_KEY", str(cfg.ops.allow_localhost_without_api_key)).lower() in {"1", "true", "yes", "on"}
+    if os.getenv("SELDON_BACKUP_DIR"):
+        cfg.ops.backup_dir = Path(os.environ["SELDON_BACKUP_DIR"])
+    if os.getenv("SELDON_VECTOR_INDEX_PATH"):
+        cfg.ops.vector_index_path = Path(os.environ["SELDON_VECTOR_INDEX_PATH"])
+    return cfg

@@ -18,6 +18,8 @@ jobs:
       - run: uv run ruff check .
       - run: uv run python -m compileall -q src tests
       - run: uv run pytest
+      - run: docker build -t seldon-api:ci .
+      - run: docker run --rm seldon-api:ci python -m seldon.cli healthcheck
 
   frontend:
     runs-on: ubuntu-latest
