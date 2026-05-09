@@ -8,6 +8,7 @@ from seldon.data.models import Scenario
 from seldon.data.repositories import AuditRepository, KBRepository, SourceRepository
 
 from .base import AgentBase, compact_terms
+from .retrieval import ExternalRetrievalProvider, normalize_document_text, query_variations, relevance_score
 from .contracts import (
     ContextGatheringInput,
     ContextGatheringOutput,
@@ -54,6 +55,10 @@ class InformationRetriever(AgentBase[QueryPlan, RetrievalResult]):
     agent_id = "information_retriever"
     model_profile = "fast"
 
+    def __init__(self, *args: Any, external_providers: list[ExternalRetrievalProvider] | None = None, **kwargs: Any):
+        super().__init__(*args, **kwargs)
+        self.external_providers = external_providers or []
+
     def _run(self, payload: QueryPlan, *, run_id: str, parent_run_id: str | None) -> RetrievalResult:
         kb = KBRepository(self.db)
         collected: list[RetrievedSource] = []
@@ -79,6 +84,9 @@ class InformationRetriever(AgentBase[QueryPlan, RetrievalResult]):
                         confidence=float((entry.perspective_tags or {}).get("confidence", 0.5)),
                     )
                 )
+
+        collected.extend(self._retrieve_external(payload, run_id=run_id, seen=seen))
+
         if not collected:
             collected.append(
                 RetrievedSource(
@@ -92,6 +100,70 @@ class InformationRetriever(AgentBase[QueryPlan, RetrievalResult]):
                 )
             )
         return RetrievalResult(query=payload.primary_topic, sources=collected)
+
+    def _retrieve_external(self, payload: QueryPlan, *, run_id: str, seen: set[str]) -> list[RetrievedSource]:
+        if not self.external_providers:
+            return []
+        sources = SourceRepository(self.db)
+        external: list[tuple[float, RetrievedSource]] = []
+        for subquery in payload.subqueries:
+            for variation in query_variations(subquery.query):
+                for provider in self.external_providers:
+                    try:
+                        results = provider.search(variation, limit=5)
+                    except Exception as exc:
+                        self.runs.add_message(run_id, "system", "External retrieval provider search failed.", payload={"provider": getattr(provider, "name", provider.__class__.__name__), "query": variation, "error": str(exc)})
+                        continue
+                    for result in results:
+                        key = result.url or f"{provider.name}:{result.title}"
+                        if key in seen:
+                            continue
+                        try:
+                            document = provider.fetch(result)
+                        except Exception as exc:
+                            self.runs.add_message(run_id, "system", "External retrieval provider fetch failed.", payload={"provider": getattr(provider, "name", provider.__class__.__name__), "url": result.url, "error": str(exc)})
+                            continue
+                        if document is None:
+                            continue
+                        content = normalize_document_text(document.content)
+                        if not content:
+                            continue
+                        seen.add(key)
+                        rank = relevance_score(variation, document)
+                        source_row = sources.create(
+                            source_type=document.source_type,
+                            url=document.url,
+                            name=document.source_name or document.title,
+                            metadata_={
+                                "provider": getattr(provider, "name", provider.__class__.__name__),
+                                "raw_document": document.model_dump(mode="json"),
+                                "search_result": result.model_dump(mode="json"),
+                                "query": subquery.query,
+                                "query_variation": variation,
+                                "relevance_score": rank,
+                            },
+                            actor=self.agent_id,
+                            reason="external retrieval raw document",
+                        )
+                        external.append(
+                            (
+                                rank,
+                                RetrievedSource(
+                                    source_type=document.source_type,
+                                    source_id=source_row.id,
+                                    url=document.url,
+                                    name=document.source_name or document.title,
+                                    content=content,
+                                    original_snippet=document.original_snippet or result.snippet or content[:1000],
+                                    topics=payload.topics,
+                                    entities=payload.entities,
+                                    valid_from=document.published_at or result.published_at,
+                                    confidence=max(0.1, min(1.0, rank)),
+                                ),
+                            )
+                        )
+        external.sort(key=lambda item: item[0], reverse=True)
+        return [source for _rank, source in external]
 
 
 class InformationSummarizer(AgentBase[RetrievalResult, Observation]):
@@ -239,6 +311,10 @@ class ContextGatheringCoordinator(AgentBase[ContextGatheringInput, ContextGather
     agent_id = "context_gathering_coordinator"
     model_profile = "balanced"
 
+    def __init__(self, *args: Any, external_retrieval_providers: list[ExternalRetrievalProvider] | None = None, **kwargs: Any):
+        super().__init__(*args, **kwargs)
+        self.external_retrieval_providers = external_retrieval_providers or []
+
     @classmethod
     def input_from_scenario(cls, scenario: Scenario, *, depth: str = "standard", source_policy: str = "kb_first", max_subqueries: int = 8, external_documents: list[dict[str, Any]] | None = None) -> ContextGatheringInput:
         return ContextGatheringInput(
@@ -256,7 +332,7 @@ class ContextGatheringCoordinator(AgentBase[ContextGatheringInput, ContextGather
         q_run, plan = QueryDecomposer(self.db, config=self.config, llm_client=self.llm_client).run(payload, parent_run_id=run_id)
         child_run_ids.append(q_run)
 
-        r_run, retrieval = InformationRetriever(self.db, config=self.config, llm_client=self.llm_client).run(plan, parent_run_id=run_id)
+        r_run, retrieval = InformationRetriever(self.db, config=self.config, llm_client=self.llm_client, external_providers=self.external_retrieval_providers).run(plan, parent_run_id=run_id)
         child_run_ids.append(r_run)
         for index, document in enumerate(payload.external_documents):
             content = str(document.get("content") or document.get("text") or "").strip()

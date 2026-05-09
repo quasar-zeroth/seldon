@@ -77,6 +77,7 @@ from .prediction import (
     ScenarioSynthesisOutput,
     SynthesizedOutcome,
 )
+from .retrieval import ExternalRetrievalProvider, ExternalSearchResult, RawDocument, StaticExternalRetrievalProvider
 
 __all__ = [
     "AdversarialRedTeamAgent",
@@ -101,6 +102,8 @@ __all__ = [
     "ExtractionInput",
     "ExpertPerspectiveSimulator",
     "ExtractionOutput",
+    "ExternalRetrievalProvider",
+    "ExternalSearchResult",
     "CalibrationInput",
     "CalibrationSummary",
     "CalibrationTracker",
@@ -137,6 +140,8 @@ __all__ = [
     "QueryDecomposer",
     "RelationshipCandidate",
     "ScenarioVersioningDiff",
+    "StaticExternalRetrievalProvider",
+    "RawDocument",
     "SentimentDriftTracker",
     "RootCauseAnalyzer",
     "RootCauseOutput",
