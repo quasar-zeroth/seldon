@@ -1,6 +1,10 @@
 import { access, readFile } from "node:fs/promises";
 
 const packageJson = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
+const workflow = await readFile(new URL("../../../.github/workflows/ci.yml", import.meta.url), "utf8");
+const compose = await readFile(new URL("../../../docker-compose.yml", import.meta.url), "utf8");
+const apiClient = await readFile(new URL("../src/lib/api/client.ts", import.meta.url), "utf8");
+const scenarioApi = await readFile(new URL("../src/lib/api/scenarios.ts", import.meta.url), "utf8");
 const routes = [
   "app/page.tsx",
   "app/scenarios/page.tsx",
@@ -30,6 +34,15 @@ await Promise.all([
 ]);
 for (const script of ["test:e2e", "test:frontend", "typecheck", "build", "test:routes"]) {
   if (!packageJson.scripts?.[script]) throw new Error(`missing frontend CI script ${script}`);
+}
+for (const needle of ["npx playwright install --with-deps chromium", "npm run test:frontend"]) {
+  if (!workflow.includes(needle)) throw new Error(`missing B.11 CI gate: ${needle}`);
+}
+for (const needle of ["SELDON_API_URL: http://api:8000", "NEXT_PUBLIC_SELDON_API_URL: http://localhost:8000", "NEXT_PUBLIC_SELDON_BROWSER_API_URL: http://localhost:8000"]) {
+  if (!compose.includes(needle)) throw new Error(`missing Docker/web API wiring: ${needle}`);
+}
+for (const needle of ["process.env.SELDON_API_URL", "BROWSER_API_BASE"]) {
+  if (!apiClient.includes(needle) && !scenarioApi.includes(needle)) throw new Error(`missing API base split: ${needle}`);
 }
 const scenariosPage = await readFile(new URL("../app/scenarios/page.tsx", import.meta.url), "utf8");
 const scenarioDetail = await readFile(new URL("../app/scenarios/[id]/page.tsx", import.meta.url), "utf8");

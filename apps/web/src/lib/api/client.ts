@@ -1,4 +1,6 @@
-const API_BASE = process.env.NEXT_PUBLIC_SELDON_API_URL ?? "http://localhost:8000";
+export const API_BASE = process.env.SELDON_API_URL ?? process.env.NEXT_PUBLIC_SELDON_API_URL ?? "http://localhost:8000";
+
+export const BROWSER_API_BASE = process.env.NEXT_PUBLIC_SELDON_BROWSER_API_URL ?? process.env.NEXT_PUBLIC_SELDON_API_URL ?? "http://localhost:8000";
 
 function authHeaders(): HeadersInit {
   const apiKey = process.env.SELDON_API_KEY ?? process.env.NEXT_PUBLIC_SELDON_API_KEY;
