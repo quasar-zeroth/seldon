@@ -145,6 +145,41 @@ def _rows(rows: list[Any]) -> list[dict[str, Any]]:
     return [_row(row) for row in rows]
 
 
+def _sort_paginate_rows(rows: list[Any], *, sort: str, order: str, offset: int, limit: int) -> list[Any]:
+    reverse = order == "desc"
+    return sorted(rows, key=lambda row: getattr(row, sort), reverse=reverse)[offset : offset + limit]
+
+
+def _gui_endpoint_contract() -> dict[str, Any]:
+    return {
+        "auth": {
+            "header": "x-seldon-api-key",
+            "bearer_supported": True,
+            "frontend_env": "NEXT_PUBLIC_SELDON_API_KEY or server-only SELDON_API_KEY",
+            "secrets_exposed": False,
+        },
+        "pagination": {"default_limit": 100, "max_limit": 500, "offset_param": "offset", "limit_param": "limit"},
+        "pages": {
+            "mission_control": ["GET /health", "GET /scenarios", "GET /runs", "GET /graph/nodes", "GET /graph/edges", "GET /predictions", "GET /config/models"],
+            "scenarios": ["GET /scenarios", "POST /scenarios", "GET /scenarios/{scenario_id}", "PATCH /scenarios/{scenario_id}", "GET /scenarios/{scenario_id}/report", "POST /scenarios/{scenario_id}/jobs/{phase}"],
+            "kb": ["GET /kb/search", "POST /kb/entries", "GET /kb/entries/{entry_id}", "PATCH /kb/entries/{entry_id}", "GET /kb/entries/{entry_id}/versions", "GET /kb/entries/{entry_id}/contradictions", "GET /kb/entries/{entry_id}/related"],
+            "graph": ["GET /graph/nodes", "POST /graph/nodes", "PATCH /graph/nodes/{node_id}", "GET /graph/edges", "POST /graph/edges", "PATCH /graph/edges/{edge_id}", "GET /graph/neighborhood/{node_id}", "POST /graph/merge-proposals/{proposal_id}/approve", "POST /graph/merge-proposals/{proposal_id}/reject"],
+            "runs": ["GET /runs", "GET /runs/{run_id}", "GET /runs/{run_id}/messages", "GET /runs/{run_id}/related", "POST /runs/{run_id}/retry", "GET /ops/jobs/{job_id}"],
+            "calibration": ["GET /calibration/summary", "GET /analytics/charts", "GET /feedback-entries", "GET /outcome-checks", "POST /predictions/{prediction_id}/resolve", "POST /scenarios/{scenario_id}/run-feedback"],
+            "settings": ["GET /config/status", "GET /config/models", "PATCH /config/models", "GET /config/gui-endpoints"],
+        },
+        "mutations": {
+            "scenario_report_export": "GET /scenarios/{scenario_id}/report",
+            "merge_approval": "POST /graph/merge-proposals/{proposal_id}/approve",
+            "merge_rejection": "POST /graph/merge-proposals/{proposal_id}/reject",
+            "prediction_resolution": "POST /predictions/{prediction_id}/resolve",
+            "chart_aggregations": "GET /analytics/charts",
+            "related_records": ["GET /kb/entries/{entry_id}/related", "GET /runs/{run_id}/related"],
+            "job_polling": ["GET /ops/jobs", "GET /ops/jobs/{job_id}"],
+        },
+    }
+
+
 def create_app(
     config: SeldonConfig | None = None,
     *,
@@ -317,6 +352,10 @@ def create_app(
     @app.get("/config/status")
     def config_status(cfg: SeldonConfig = Depends(get_config_dep)) -> dict[str, Any]:
         return _config_status(cfg)
+
+    @app.get("/config/gui-endpoints")
+    def gui_endpoint_contract() -> dict[str, Any]:
+        return _gui_endpoint_contract()
 
     @app.get("/config/models")
     def model_config(cfg: SeldonConfig = Depends(get_config_dep)) -> dict[str, Any]:
@@ -888,6 +927,10 @@ def create_app(
         type: str | None = None,
         min_importance: float | None = Query(default=None, ge=0.0, le=1.0),
         max_stability: float | None = Query(default=None, ge=0.0, le=1.0),
+        sort: str = Query(default="updated_at", pattern="^(updated_at|created_at|name|type|importance_score|stability_score)$"),
+        order: str = Query(default="desc", pattern="^(asc|desc)$"),
+        limit: int = Query(100, ge=1, le=500),
+        offset: int = Query(0, ge=0),
         db: Session = Depends(get_session_dep),
     ) -> list[dict[str, Any]]:
         nodes = GraphRepository(db).list_nodes()
@@ -899,7 +942,7 @@ def create_app(
             nodes = [node for node in nodes if node.importance_score >= min_importance]
         if max_stability is not None:
             nodes = [node for node in nodes if node.stability_score <= max_stability]
-        return _rows(nodes)
+        return _rows(_sort_paginate_rows(nodes, sort=sort, order=order, offset=offset, limit=limit))
 
     @app.get("/graph/nodes/{node_id}")
     def get_graph_node(node_id: str, db: Session = Depends(get_session_dep)) -> dict[str, Any]:
@@ -930,6 +973,10 @@ def create_app(
         min_confidence: float | None = Query(default=None, ge=0.0, le=1.0),
         min_strength: float | None = Query(default=None, ge=0.0, le=1.0),
         min_evidence_count: int | None = Query(default=None, ge=0),
+        sort: str = Query(default="updated_at", pattern="^(updated_at|created_at|relationship_type|confidence|strength|direction)$"),
+        order: str = Query(default="desc", pattern="^(asc|desc)$"),
+        limit: int = Query(100, ge=1, le=500),
+        offset: int = Query(0, ge=0),
         db: Session = Depends(get_session_dep),
     ) -> list[dict[str, Any]]:
         edges = GraphRepository(db).list_edges(node_id=node_id)
@@ -947,7 +994,7 @@ def create_app(
             edges = [edge for edge in edges if edge.strength >= min_strength]
         if min_evidence_count is not None:
             edges = [edge for edge in edges if len(edge.evidence_kb_ids or []) >= min_evidence_count]
-        return _rows(edges)
+        return _rows(_sort_paginate_rows(edges, sort=sort, order=order, offset=offset, limit=limit))
 
     @app.get("/graph/edges/{edge_id}")
     def get_graph_edge(edge_id: str, db: Session = Depends(get_session_dep)) -> dict[str, Any]:
@@ -1087,10 +1134,32 @@ def create_app(
         return _row(row)
 
     @app.get("/predictions")
-    def list_predictions(scenario_id: str | None = None, db: Session = Depends(get_session_dep)) -> list[dict[str, Any]]:
-        stmt = select(ScenarioPrediction).order_by(ScenarioPrediction.updated_at.desc())
+    def list_predictions(
+        scenario_id: str | None = None,
+        status_filter: str | None = Query(default=None, alias="status"),
+        min_confidence: float | None = Query(default=None, ge=0.0, le=1.0),
+        sort: str = Query(default="updated_at", pattern="^(updated_at|created_at|confidence|status)$"),
+        order: str = Query(default="desc", pattern="^(asc|desc)$"),
+        limit: int = Query(100, ge=1, le=500),
+        offset: int = Query(0, ge=0),
+        db: Session = Depends(get_session_dep),
+    ) -> list[dict[str, Any]]:
+        stmt = select(ScenarioPrediction)
         if scenario_id:
             stmt = stmt.where(ScenarioPrediction.scenario_id == scenario_id)
+        if status_filter:
+            stmt = stmt.where(ScenarioPrediction.status == status_filter)
+        if min_confidence is not None:
+            stmt = stmt.where(ScenarioPrediction.confidence >= min_confidence)
+        if sort == "confidence":
+            order_col = ScenarioPrediction.confidence
+        elif sort == "created_at":
+            order_col = ScenarioPrediction.created_at
+        elif sort == "status":
+            order_col = ScenarioPrediction.status
+        else:
+            order_col = ScenarioPrediction.updated_at
+        stmt = stmt.order_by(order_col.desc() if order == "desc" else order_col.asc()).offset(offset).limit(limit)
         return _rows(list(db.scalars(stmt)))
 
     @app.get("/predictions/{prediction_id}")

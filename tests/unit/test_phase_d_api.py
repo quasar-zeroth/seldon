@@ -383,6 +383,42 @@ def test_chart_analytics_endpoint_aggregates_persisted_visualization_records():
     assert body["model_performance"][0]["total_tokens"] == 99
 
 
+def test_gui_endpoint_contract_documents_backend_integration_surface():
+    client = api_client()
+
+    response = client.get("/config/gui-endpoints")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["auth"]["header"] == "x-seldon-api-key"
+    assert body["auth"]["secrets_exposed"] is False
+    assert "GET /analytics/charts" in body["pages"]["calibration"]
+    assert body["mutations"]["prediction_resolution"] == "POST /predictions/{prediction_id}/resolve"
+    assert body["pagination"]["max_limit"] == 500
+
+
+def test_gui_list_endpoints_support_sorting_pagination_and_empty_states():
+    client = api_client()
+
+    scenario = client.post("/scenarios", json={"name": "Pagination scenario", "target_question": "Do filters work?"}).json()
+    low = client.post("/graph/nodes", json={"name": "Low importance", "type": "metric", "importance_score": 0.1}).json()
+    high = client.post("/graph/nodes", json={"name": "High importance", "type": "metric", "importance_score": 0.9}).json()
+    client.post("/graph/edges", json={"source_node_id": low["id"], "target_node_id": high["id"], "relationship_type": "causes", "confidence": 0.2, "strength": 0.3}).json()
+    strong_edge = client.post("/graph/edges", json={"source_node_id": high["id"], "target_node_id": low["id"], "relationship_type": "opposes", "confidence": 0.8, "strength": 0.9}).json()
+    client.post("/predictions", json={"scenario_id": scenario["id"], "statement": "Weak confidence", "confidence": 0.25, "status": "draft"})
+    strong_prediction = client.post("/predictions", json={"scenario_id": scenario["id"], "statement": "Strong confidence", "confidence": 0.85, "status": "active"}).json()
+
+    nodes = client.get("/graph/nodes", params={"sort": "importance_score", "order": "desc", "limit": 1}).json()
+    assert [node["id"] for node in nodes] == [high["id"]]
+    edges = client.get("/graph/edges", params={"sort": "strength", "order": "desc", "limit": 1}).json()
+    assert [edge["id"] for edge in edges] == [strong_edge["id"]]
+    predictions = client.get("/predictions", params={"scenario_id": scenario["id"], "status": "active", "min_confidence": 0.8, "sort": "confidence", "limit": 1}).json()
+    assert [prediction["id"] for prediction in predictions] == [strong_prediction["id"]]
+
+    assert client.get("/graph/nodes", params={"type": "actor"}).json() == []
+    assert client.get("/predictions", params={"scenario_id": "missing"}).json() == []
+    assert client.get("/graph/nodes", params={"sort": "unsupported"}).status_code == 422
+
+
 def test_settings_status_and_model_patch_validation_and_agent_overrides():
     client = api_client()
 
