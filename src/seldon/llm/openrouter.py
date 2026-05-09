@@ -166,10 +166,11 @@ class OpenRouterClient:
 
     def build_payload(self, messages: list[dict], system: str | None = None, **kwargs: Any) -> dict[str, Any]:
         """Public helper used by tests and host apps to inspect request bodies."""
-        model = kwargs.get("model") or self.model_for_profile(kwargs.get("model_profile"))
+        profile_override = kwargs.get("model_profile")
+        model = kwargs.get("model") or self.model_for_profile(profile_override)
         agent_cfg = kwargs.get("agent_config")
-        if isinstance(agent_cfg, AgentModelConfig):
-            model = agent_cfg.model or self.model_for_profile(agent_cfg.model_profile)
+        if isinstance(agent_cfg, AgentModelConfig) and kwargs.get("model") is None:
+            model = agent_cfg.model or self.model_for_profile(profile_override or agent_cfg.model_profile)
         return self._payload(
             messages,
             system=system,
@@ -234,7 +235,7 @@ class OpenRouterClient:
                     raw = response.json()
                     parsed = self._parse_response(raw, kwargs.get("schema"))
                     metadata = self._metadata(raw, model, started, error=None)
-                    self.recorder.record({**metadata, "agent": kwargs.get("agent"), "ok": True})
+                    self.recorder.record({**metadata, "agent": kwargs.get("agent"), "agent_run_id": kwargs.get("agent_run_id"), "repair_attempt": kwargs.get("repair_attempt"), "escalated_from": kwargs.get("escalated_from"), "ok": True})
                     return OpenRouterResponse(parsed, model=model, raw=raw, metadata=metadata)
                 except Exception as retry_exc:
                     exc = retry_exc
@@ -244,7 +245,7 @@ class OpenRouterClient:
                     raise
         except Exception as exc:
             error = str(exc)
-            self.recorder.record({**self._metadata(raw, model, started, error=error), "agent": kwargs.get("agent"), "ok": False})
+            self.recorder.record({**self._metadata(raw, model, started, error=error), "agent": kwargs.get("agent"), "agent_run_id": kwargs.get("agent_run_id"), "repair_attempt": kwargs.get("repair_attempt"), "escalated_from": kwargs.get("escalated_from"), "ok": False})
             raise
         finally:
             if close_client:
@@ -286,7 +287,7 @@ class OpenRouterClient:
                     raw = response.json()
                     parsed = self._parse_response(raw, kwargs.get("schema"))
                     metadata = self._metadata(raw, model, started, error=None)
-                    self.recorder.record({**metadata, "agent": kwargs.get("agent"), "ok": True})
+                    self.recorder.record({**metadata, "agent": kwargs.get("agent"), "agent_run_id": kwargs.get("agent_run_id"), "repair_attempt": kwargs.get("repair_attempt"), "escalated_from": kwargs.get("escalated_from"), "ok": True})
                     return OpenRouterResponse(parsed, model=model, raw=raw, metadata=metadata)
                 except Exception as exc:
                     if self._should_retry(response, exc) and attempt < max_retries:
@@ -294,7 +295,7 @@ class OpenRouterClient:
                         continue
                     raise
         except Exception as exc:
-            self.recorder.record({**self._metadata(raw, model, started, error=str(exc)), "agent": kwargs.get("agent"), "ok": False})
+            self.recorder.record({**self._metadata(raw, model, started, error=str(exc)), "agent": kwargs.get("agent"), "agent_run_id": kwargs.get("agent_run_id"), "repair_attempt": kwargs.get("repair_attempt"), "escalated_from": kwargs.get("escalated_from"), "ok": False})
             raise
         finally:
             if close_client:

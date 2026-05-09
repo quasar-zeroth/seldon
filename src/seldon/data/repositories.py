@@ -344,12 +344,14 @@ class ScenarioRepository(BaseRepository[ScenarioPrediction]):
 class DatabaseModelInvocationRecorder:
     """Recorder compatible with OpenRouterClient that writes to model_invocations."""
 
-    def __init__(self, session: Session, *, auto_commit: bool = False):
+    def __init__(self, session: Session, *, agent_run_id: str | None = None, auto_commit: bool = False):
         self.session = session
+        self.agent_run_id = agent_run_id
         self.auto_commit = auto_commit
 
     def record(self, row: dict[str, Any]) -> None:
         invocation = ModelInvocation(
+            agent_run_id=row.get("agent_run_id") or self.agent_run_id,
             agent=row.get("agent"),
             model=row.get("model") or "unknown",
             provider=row.get("provider"),
