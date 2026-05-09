@@ -7,7 +7,9 @@
     "build": "next build",
     "lint": "next lint",
     "typecheck": "tsc --noEmit",
-    "test:routes": "node tests/route-smoke.mjs"
+    "test:routes": "node tests/route-smoke.mjs",
+    "test:e2e": "playwright test",
+    "test:frontend": "npm run typecheck && npm run build && npm run test:routes && npm run test:e2e"
   },
   "dependencies": {
     "@types/node": "^20.0.0",
@@ -19,5 +21,8 @@
     "reactflow": "^11.11.4",
     "recharts": "^2.15.4",
     "typescript": "^5.4.0"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.59.1"
   }
 }

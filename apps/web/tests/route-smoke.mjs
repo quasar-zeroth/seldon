@@ -1,5 +1,6 @@
 import { access, readFile } from "node:fs/promises";
 
+const packageJson = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
 const routes = [
   "app/page.tsx",
   "app/scenarios/page.tsx",
@@ -21,6 +22,15 @@ for (const name of shared) {
   if (!ui.includes(`function ${name}`)) throw new Error(`missing shared component ${name}`);
 }
 await Promise.all(modules.map((name) => access(new URL(`../src/lib/api/${name}.ts`, import.meta.url))));
+await Promise.all([
+  access(new URL("../playwright.config.ts", import.meta.url)),
+  access(new URL("./mock-api.mjs", import.meta.url)),
+  access(new URL("./e2e/gui-routes.spec.ts", import.meta.url)),
+  access(new URL("./e2e/gui-workflows.spec.ts", import.meta.url)),
+]);
+for (const script of ["test:e2e", "test:frontend", "typecheck", "build", "test:routes"]) {
+  if (!packageJson.scripts?.[script]) throw new Error(`missing frontend CI script ${script}`);
+}
 const scenariosPage = await readFile(new URL("../app/scenarios/page.tsx", import.meta.url), "utf8");
 const scenarioDetail = await readFile(new URL("../app/scenarios/[id]/page.tsx", import.meta.url), "utf8");
 const kbPage = await readFile(new URL("../app/kb/page.tsx", import.meta.url), "utf8");
