@@ -86,3 +86,6 @@ pre { max-width: 100%; overflow: auto; color: #cbd5e1; background: rgba(7,10,18,
 .recharts-wrapper text { fill: #a7b0c8; font-size: 12px; }
 .recharts-cartesian-grid line { stroke: rgba(148, 163, 184, .18); }
 .recharts-default-tooltip { background: rgba(7, 10, 18, .95) !important; border: 1px solid rgba(148, 163, 184, .28) !important; border-radius: 12px; color: #eef2ff; }
+
+.guided-panel { border: 1px solid rgba(96, 165, 250, .24); border-radius: 16px; padding: 12px; display: grid; gap: 10px; background: rgba(96, 165, 250, .06); }
+.guided-panel legend { color: #bfdbfe; padding: 0 6px; }

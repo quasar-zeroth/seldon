@@ -12,7 +12,7 @@ from typing import Any
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, StreamingResponse
 from sqlalchemy import Engine, or_, select
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -527,13 +527,25 @@ def create_app(
         job = app_job_queue.enqueue("phase", {"scenario_id": scenario_id, "phase": phase, "request": payload or {}}, idempotency_key=idempotency_key if isinstance(idempotency_key, str) else None)
         return job.to_dict()
 
-    @app.get("/scenarios/{scenario_id}/report", response_class=PlainTextResponse)
-    def scenario_report(scenario_id: str, db: Session = Depends(get_session_dep)) -> str:
+    @app.get("/scenarios/{scenario_id}/report", response_model=None)
+    def scenario_report(scenario_id: str, format: str = Query(default="markdown", pattern="^(markdown|json|html)$"), db: Session = Depends(get_session_dep)) -> Any:
         scenario = db.get(Scenario, scenario_id)
         if scenario is None:
             raise not_found("scenario", scenario_id)
         predictions = list(db.scalars(select(ScenarioPrediction).where(ScenarioPrediction.scenario_id == scenario_id).order_by(ScenarioPrediction.updated_at.desc()).limit(1)))
         latest = predictions[0] if predictions else None
+        nodes = list(db.scalars(select(ERGNode)))
+        scoped_nodes = [node for node in nodes if scenario_id in (node.scenario_ids or [])]
+        edges = list(db.scalars(select(ERGEdge)))
+        scoped_edges = [edge for edge in edges if scenario_id in (edge.scenario_ids or [])]
+        evidence_ids = latest.evidence_links if latest is not None else []
+        evidence = list(db.scalars(select(KBEntry).where(KBEntry.id.in_(evidence_ids)))) if evidence_ids else []
+        payload = {
+            "scenario": row_to_dict(scenario),
+            "latest_prediction": row_to_dict(latest) if latest is not None else None,
+            "graph_summary": {"node_count": len(scoped_nodes), "edge_count": len(scoped_edges), "top_nodes": [row_to_dict(node) for node in sorted(scoped_nodes, key=lambda node: node.importance_score, reverse=True)[:8]]},
+            "evidence": [row_to_dict(item) for item in evidence],
+        }
         lines = [
             f"# {scenario.name}",
             "",
@@ -559,7 +571,21 @@ def create_app(
             lines.extend([f"- {item}" for item in latest.assumptions] or ["- None recorded yet"])
             lines.extend(["", "## Evidence"])
             lines.extend([f"- KB {item}" for item in latest.evidence_links] or ["- None linked yet"])
-        return "\n".join(lines) + "\n"
+        lines.extend(["", "## Graph summary", f"- Nodes: {len(scoped_nodes)}", f"- Edges: {len(scoped_edges)}"])
+        lines.extend([f"- Top node: {node.name} ({node.type}, importance {node.importance_score:.2f})" for node in sorted(scoped_nodes, key=lambda node: node.importance_score, reverse=True)[:5]] or ["- No graph nodes scoped to this scenario yet"])
+        if evidence:
+            lines.extend(["", "## Evidence detail"])
+            lines.extend([f"- {item.source_name}: {item.content[:180]}" for item in evidence])
+        markdown = "\n".join(lines) + "\n"
+        if format == "json":
+            return JSONResponse(payload)
+        if format == "html":
+            html = "".join(
+                f"<p>{line}</p>" if line and not line.startswith("#") else (f"<h1>{line[2:]}</h1>" if line.startswith("# ") else f"<h2>{line[3:]}</h2>" if line.startswith("## ") else "")
+                for line in markdown.splitlines()
+            )
+            return HTMLResponse(f"<!doctype html><html><head><title>{scenario.name}</title></head><body>{html}</body></html>")
+        return PlainTextResponse(markdown, media_type="text/markdown")
 
     @app.patch("/scenarios/{scenario_id}")
     def update_scenario(scenario_id: str, payload: ScenarioUpdate, db: Session = Depends(get_session_dep)) -> dict[str, Any]:
@@ -1102,6 +1128,28 @@ def create_app(
         with db.begin():
             audit = GraphRepository(db).audit.emit("graph_merge_proposal", proposal_id, "reject", actor=str(payload.get("actor") or "ui"), reason=payload.get("reason"), after={"proposal_id": proposal_id, "decision": "rejected", "payload": payload})
         return {"proposal_id": proposal_id, "status": "rejected", "audit_log_id": audit.id}
+
+    @app.get("/graph/merge-proposals")
+    def list_graph_merge_proposals(status_filter: str | None = Query(default=None, alias="status"), db: Session = Depends(get_session_dep)) -> list[dict[str, Any]]:
+        proposals: dict[str, dict[str, Any]] = {}
+        extraction_audits = list(db.scalars(select(AuditLog).where(AuditLog.action == "extraction_graph_write").order_by(AuditLog.created_at.desc())))
+        for audit in extraction_audits:
+            for index, proposal in enumerate(((audit.after or {}).get("merge_proposals") or [])):
+                if not isinstance(proposal, dict):
+                    continue
+                proposal_id = str(proposal.get("id") or proposal.get("existing_node_id") or f"{audit.id}:{index}")
+                proposals.setdefault(proposal_id, {"id": proposal_id, "status": "pending", "created_at": audit.created_at.isoformat(), "source_audit_log_id": audit.id, **proposal})
+        decisions = list(db.scalars(select(AuditLog).where(AuditLog.entity_type == "graph_merge_proposal").order_by(AuditLog.created_at.desc())))
+        for decision in decisions:
+            proposal_id = decision.entity_id
+            row = proposals.setdefault(proposal_id, {"id": proposal_id, "created_at": decision.created_at.isoformat()})
+            row["status"] = "approved" if decision.action == "approve" else "rejected" if decision.action == "reject" else decision.action
+            row["decision_reason"] = decision.reason
+            row["decided_at"] = decision.created_at.isoformat()
+        rows = sorted(proposals.values(), key=lambda item: str(item.get("created_at") or ""), reverse=True)
+        if status_filter:
+            rows = [row for row in rows if row.get("status") == status_filter]
+        return rows
 
     @app.post("/runs", status_code=201)
     def create_run(payload: AgentRunCreate, db: Session = Depends(get_session_dep)) -> dict[str, Any]:

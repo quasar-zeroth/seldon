@@ -63,6 +63,7 @@ const edges = [
 ];
 const run = { id: "run-1", agent_id: "prediction_coordinator", phase: "prediction", status: "failed", input: { scenario_id: "scenario-1" }, output: { prediction_id: "prediction-1" }, error: "retryable", source_references: ["kb-1"], model_invocations: [{ model: "test/model", provider: "mock", usage: { total_tokens: 42 }, estimated_cost: 0.01, ok: false }], created_at: now(), updated_at: now(), elapsed_ms: 1200 };
 const job = { id: "job-1", kind: "phase", status: "queued", payload: { scenario_id: "scenario-1" }, result: null, error: null, created_at: now(), updated_at: now() };
+const mergeProposal = { id: "merge-1", status: "pending", canonical_name: "Fed policy", type: "policy", existing_node_id: "node-1", candidate_names: ["Fed", "Federal Reserve policy"], reason: "Duplicate policy aliases", confidence: 0.88, created_at: now() };
 const configStatus = {
   source_configuration: { configured_sources: "database", runtime_editable: false },
   persistence_backend: { kind: "sqlite", sqlite_path: "/tmp/seldon.db", runtime_editable: false },
@@ -134,6 +135,7 @@ export function createMockApiServer() {
       if (path === "/graph/snapshots") return json(res, req.method === "POST" ? 201 : 200, req.method === "POST" ? { id: "snapshot-new", created_at: now(), reason: "UI graph snapshot" } : [{ id: "snapshot-2", created_at: now(), reason: "new" }, { id: "snapshot-1", created_at: now(), reason: "old" }]);
       if (path === "/graph/snapshots/snapshot-1/diff/snapshot-2") return json(res, 200, { added_nodes: [], removed_nodes: [] });
       if (path === "/graph/reuse-candidates/scenario-1") return json(res, 200, { nodes, edges });
+      if (path === "/graph/merge-proposals") return json(res, 200, [mergeProposal]);
       if (path.startsWith("/graph/merge-proposals/")) return json(res, 202, { proposal_id: path.split("/")[3], status: path.endsWith("approve") ? "approved" : "rejected" });
       if (path === "/runs") return json(res, 200, [run]);
       if (path === "/runs/run-1") return json(res, 200, run);

@@ -107,7 +107,7 @@ function edgeDetail(edge: GraphEdge | undefined, nodes: GraphNode[]) {
 
 export default async function GraphPage({ searchParams }: { searchParams?: GraphFilters }) {
   const filters = searchParams ?? {};
-  const [filteredNodes, filteredEdges, snapshots] = await Promise.all([graphApi.nodes(filters), graphApi.edges(filters), graphApi.snapshots(filters.scenario_id)]);
+  const [filteredNodes, filteredEdges, snapshots, mergeProposals] = await Promise.all([graphApi.nodes(filters), graphApi.edges(filters), graphApi.snapshots(filters.scenario_id), graphApi.mergeProposals().catch(() => [])]);
   const neighborhood = filters.selected_node ? await graphApi.neighborhood(filters.selected_node).catch(() => null) : null;
   const nodes = neighborhood?.nodes ?? filteredNodes;
   const edges = neighborhood?.edges ?? filteredEdges;
@@ -133,13 +133,14 @@ export default async function GraphPage({ searchParams }: { searchParams?: Graph
         <input name="max_stability" defaultValue={filters.max_stability ?? ""} placeholder="Max stability / instability" />
         <select name="hide_low_confidence" defaultValue={filters.hide_low_confidence ?? ""}><option value="">Show all confidence</option><option value="true">Hide low-confidence edges</option></select>
         <select name="overlay" defaultValue={filters.overlay ?? "confidence"}><option value="confidence">Confidence overlay</option><option value="strength">Strength overlay</option><option value="importance">Importance overlay</option><option value="instability">Instability overlay</option><option value="scenario">Scenario path overlay</option></select>
+        <select name="layout" defaultValue={(filters as GraphFilters & { layout?: string }).layout ?? (filteredNodes.length > 40 ? "grid" : "radial")}><option value="radial">Radial layout</option><option value="grid">Large-graph grid</option><option value="layers">Type layers</option></select>
         <button className="button" type="submit">Apply filters</button>
         <Link className="button" href="/graph">Reset filters</Link>
       </form>
     </Card>
     <section className="graph-layout">
       <Card title="Graph canvas">
-        {nodes.length ? <><div className="graph-controls"><Link className="button" href="/graph">Fit view/reset</Link>{selectedNode ? <Link className="button" href={`/graph?selected_node=${selectedNode.id}`}>Center selected node</Link> : null}<StatusBadge status={`${nodes.length} nodes / ${edges.length} edges`} /></div><GraphExplorerCanvas nodes={nodes} edges={edges} selectedNodeId={filters.selected_node} selectedEdgeId={filters.selected_edge} overlay={(filters.overlay as "confidence") ?? "confidence"} /></> : <EmptyState detail="Run extraction and graph construction to create persisted graph records." />}
+        {nodes.length ? <><div className="graph-controls"><Link className="button" href="/graph">Fit view/reset</Link>{selectedNode ? <Link className="button" href={`/graph?selected_node=${selectedNode.id}`}>Center selected node</Link> : null}<StatusBadge status={`${nodes.length} nodes / ${edges.length} edges`} />{nodes.length > 40 ? <span className="pill warning">Dense graph mode: use grid or layers for readability</span> : null}</div><GraphExplorerCanvas nodes={nodes} edges={edges} selectedNodeId={filters.selected_node} selectedEdgeId={filters.selected_edge} overlay={(filters.overlay as "confidence") ?? "confidence"} layout={((filters as GraphFilters & { layout?: "radial" | "grid" | "layers" }).layout) ?? (nodes.length > 40 ? "grid" : "radial")} /></> : <EmptyState detail="Run extraction and graph construction to create persisted graph records." />}
       </Card>
       <aside className="detail-drawer">
         {nodeDetail(selectedNode)}
@@ -160,10 +161,16 @@ export default async function GraphPage({ searchParams }: { searchParams?: Graph
         {snapshots.length ? snapshots.slice(0, 4).map((snapshot) => <p className="muted" key={snapshot.id}>{snapshot.id.slice(0, 8)} · {new Date(snapshot.created_at).toLocaleString()} · {snapshot.reason ?? "snapshot"}</p>) : <EmptyState detail="No graph snapshots have been created yet." />}
         {diff ? <pre>{JSON.stringify(diff, null, 2)}</pre> : <p className="muted">Create at least two snapshots to compare graph diffs.</p>}
       </Card>
-      <Card title="Reuse candidates and merge proposals">
+      <Card title="Reuse candidates and merge proposal inbox">
         {filters.scenario_id ? <><p className="muted">{reuse.nodes.length} candidate nodes and {reuse.edges.length} candidate edges are available for scenario reuse.</p>{reuse.nodes.slice(0, 5).map((node) => <p key={node.id}>{node.name}</p>)}</> : <EmptyState detail="Enter a scenario ID in filters to load cross-scenario reuse candidates." />}
-        <ConfirmMutationDialog label="Approve merge proposal"><form action={approveMergeAction} className="form-stack"><input name="proposal_id" placeholder="Merge proposal ID" required /><input name="reason" placeholder="Reason" /><button className="button" type="submit">Approve via backend</button></form></ConfirmMutationDialog>
-        <ConfirmMutationDialog label="Reject merge proposal"><form action={rejectMergeAction} className="form-stack"><input name="proposal_id" placeholder="Merge proposal ID" required /><input name="reason" placeholder="Reason" /><button className="button" type="submit">Reject via backend</button></form></ConfirmMutationDialog>
+        <h3>Merge review queue</h3>
+        {mergeProposals.length ? mergeProposals.slice(0, 8).map((proposal) => <details className="timeline-item" key={proposal.id}>
+          <summary>{proposal.canonical_name ?? proposal.id} · {proposal.status}</summary>
+          <p className="muted">{proposal.type ?? "node"} · confidence {proposal.confidence != null ? Math.round(proposal.confidence * 100) : "—"}% · {proposal.reason ?? "No reason recorded."}</p>
+          {proposal.candidate_names?.length ? <p>Candidates: {proposal.candidate_names.join(", ")}</p> : null}
+          <div className="pill-row"><ConfirmMutationDialog label="Approve"><form action={approveMergeAction} className="form-stack"><input type="hidden" name="proposal_id" value={proposal.id} /><input name="reason" placeholder="Reason" defaultValue="approved from merge inbox" /><button className="button" type="submit">Approve via backend</button></form></ConfirmMutationDialog><ConfirmMutationDialog label="Reject"><form action={rejectMergeAction} className="form-stack"><input type="hidden" name="proposal_id" value={proposal.id} /><input name="reason" placeholder="Reason" defaultValue="rejected from merge inbox" /><button className="button" type="submit">Reject via backend</button></form></ConfirmMutationDialog></div>
+        </details>) : <EmptyState detail="No merge proposals are waiting for review. Extraction runs will populate this inbox from deduplication audits." />}
+        <details className="timeline-item"><summary>Manual proposal decision</summary><ConfirmMutationDialog label="Approve merge proposal"><form action={approveMergeAction} className="form-stack"><input name="proposal_id" placeholder="Merge proposal ID" required /><input name="reason" placeholder="Reason" /><button className="button" type="submit">Approve via backend</button></form></ConfirmMutationDialog><ConfirmMutationDialog label="Reject merge proposal"><form action={rejectMergeAction} className="form-stack"><input name="proposal_id" placeholder="Merge proposal ID" required /><input name="reason" placeholder="Reason" /><button className="button" type="submit">Reject via backend</button></form></ConfirmMutationDialog></details>
       </Card>
     </section>
   </>;

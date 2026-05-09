@@ -9,6 +9,7 @@ type Props = {
   selectedNodeId?: string;
   selectedEdgeId?: string;
   overlay?: "confidence" | "strength" | "importance" | "instability" | "scenario";
+  layout?: "radial" | "grid" | "layers";
 };
 
 const typeColors: Record<string, string> = {
@@ -20,8 +21,17 @@ const typeColors: Record<string, string> = {
   actor: "#f472b6",
 };
 
-function nodePosition(index: number, total: number) {
-  const radius = Math.max(170, total * 28);
+function nodePosition(index: number, total: number, layout: Props["layout"] = "radial", node?: GraphNode) {
+  if (layout === "grid") {
+    const columns = Math.ceil(Math.sqrt(Math.max(total, 1)));
+    return { x: (index % columns) * 220, y: Math.floor(index / columns) * 150 };
+  }
+  if (layout === "layers") {
+    const layerOrder = ["actor", "policy", "event", "topic", "metric", "entity"];
+    const layer = Math.max(0, layerOrder.indexOf(node?.type ?? "entity"));
+    return { x: layer * 240, y: (index % Math.max(4, Math.ceil(total / 3))) * 135 };
+  }
+  const radius = Math.max(170, Math.min(900, total * 28));
   const angle = (index / Math.max(total, 1)) * Math.PI * 2;
   return { x: Math.round(Math.cos(angle) * radius + radius + 80), y: Math.round(Math.sin(angle) * radius + radius + 40) };
 }
@@ -41,13 +51,14 @@ function edgeColor(edge: GraphEdge, overlay?: Props["overlay"]) {
   return "#60a5fa";
 }
 
-export function GraphExplorerCanvas({ nodes, edges, selectedNodeId, selectedEdgeId, overlay = "confidence" }: Props) {
+export function GraphExplorerCanvas({ nodes, edges, selectedNodeId, selectedEdgeId, overlay = "confidence", layout = "radial" }: Props) {
+  const dense = nodes.length > 40;
   const rfNodes: Node[] = nodes.map((node, index) => ({
     id: node.id,
-    position: nodePosition(index, nodes.length),
+    position: nodePosition(index, nodes.length, layout, node),
     data: { label: `${node.name}\n${node.type}` },
     style: {
-      width: 150 + Math.round(node.importance_score * 42),
+      width: (dense ? 122 : 150) + Math.round(node.importance_score * (dense ? 24 : 42)),
       borderRadius: 18,
       padding: 12,
       color: "#eef2ff",
@@ -55,7 +66,7 @@ export function GraphExplorerCanvas({ nodes, edges, selectedNodeId, selectedEdge
       border: nodeBorder(node, node.id === selectedNodeId, overlay),
       boxShadow: node.id === selectedNodeId ? "0 0 0 6px rgba(96, 165, 250, .18)" : "0 10px 30px rgba(0,0,0,.25)",
       whiteSpace: "pre-line",
-      fontSize: 12,
+      fontSize: dense ? 10 : 12,
     },
   }));
 

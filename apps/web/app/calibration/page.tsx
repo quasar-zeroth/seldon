@@ -9,12 +9,18 @@ function csv(value: FormDataEntryValue | null) {
   return String(value || "").split(",").map((item) => item.trim()).filter(Boolean);
 }
 
-function parseGraphCorrections(value: FormDataEntryValue | null) {
-  const raw = String(value || "").trim();
-  if (!raw) return [];
-  const parsed = JSON.parse(raw);
-  if (!Array.isArray(parsed)) throw new Error("Graph corrections must be a JSON array.");
-  return parsed as Array<Record<string, unknown>>;
+function parseGraphCorrections(formData: FormData) {
+  const raw = String(formData.get("graph_corrections") || "").trim();
+  const manual = raw ? JSON.parse(raw) : [];
+  if (!Array.isArray(manual)) throw new Error("Graph corrections must be a JSON array.");
+  const action = String(formData.get("correction_action") || "").trim();
+  const guided = action ? [{
+    action,
+    target_type: String(formData.get("correction_target_type") || "node"),
+    target_id: String(formData.get("correction_target_id") || "").trim(),
+    rationale: String(formData.get("correction_rationale") || "").trim(),
+  }] : [];
+  return [...guided, ...(manual as Array<Record<string, unknown>>)];
 }
 
 async function resolvePredictionAction(formData: FormData) {
@@ -31,7 +37,7 @@ async function resolvePredictionAction(formData: FormData) {
     notes: String(formData.get("notes") || ""),
     missed_factors: csv(formData.get("missed_factors")),
     failed_assumptions: csv(formData.get("failed_assumptions")),
-    graph_corrections: parseGraphCorrections(formData.get("graph_corrections")),
+    graph_corrections: parseGraphCorrections(formData),
     update_kb: formData.get("update_kb") === "on",
     trigger_reprediction: formData.get("trigger_reprediction") === "on",
   });
@@ -142,7 +148,8 @@ export default async function CalibrationPage() {
           <input name="missed_factors" placeholder="Missed factors, comma-separated" />
           <input name="failed_assumptions" placeholder="Failed assumptions, comma-separated" />
           <textarea name="notes" placeholder="Root-cause notes / lessons" rows={3} />
-          <ConfirmMutationDialog label="Submit graph corrections">
+          <fieldset className="guided-panel"><legend>Guided graph correction</legend><select name="correction_action"><option value="">No structured correction</option><option value="modify_node">Modify node state</option><option value="modify_edge">Modify relationship</option><option value="add_missing_factor">Add missing factor</option><option value="lower_confidence">Lower confidence</option></select><select name="correction_target_type"><option value="node">Node</option><option value="edge">Edge</option><option value="scenario">Scenario</option></select><input name="correction_target_id" placeholder="Target node/edge/scenario ID" /><textarea name="correction_rationale" placeholder="Correction rationale" rows={2} /></fieldset>
+          <ConfirmMutationDialog label="Submit advanced graph corrections JSON">
             <textarea name="graph_corrections" placeholder='[{"action":"modify_edge","details":{"id":"...","confidence":0.4}}]' rows={4} />
           </ConfirmMutationDialog>
           <label className="muted"><input name="update_kb" type="checkbox" defaultChecked /> Persist feedback correction to KB</label>

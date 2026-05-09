@@ -34,9 +34,16 @@ test("KB search filters round-trip and entry detail exposes related records", as
   await expect(page.getByText("Gold outlook")).toBeVisible();
 });
 
-test("graph selection and edge edit persistence use backend mutations", async ({ page }) => {
+test("graph selection, layout controls, merge inbox, and edge edit persistence use backend mutations", async ({ page }) => {
   await page.goto("/graph");
   await expect(page.locator('[data-testid="reactflow-graph-canvas"]')).toBeVisible();
+  await page.getByRole("combobox").filter({ hasText: /Radial layout|Large-graph grid|Type layers/ }).selectOption("grid");
+  await page.getByRole("button", { name: "Apply filters" }).click();
+  await expect(page).toHaveURL(/layout=grid/);
+  await expect(page.getByText("Fed policy · pending")).toBeVisible();
+  await page.getByText("Fed policy · pending").click();
+  await expect(page.getByText("Duplicate policy aliases")).toBeVisible();
+
   await page.getByRole("link", { name: /Fed policy/ }).first().click();
   await expect(page).toHaveURL(/selected_node=node-1/);
   await expect(page.getByRole("heading", { level: 2, name: "Selected node detail" })).toBeVisible();
@@ -53,6 +60,16 @@ test("run retry and settings validation surfaces are wired", async ({ page }) =>
   await page.getByText("Retry / re-dispatch run").click();
   await page.getByRole("button", { name: "Retry through backend" }).click();
   await expect(page.getByRole("heading", { level: 2, name: "Model invocations" })).toBeVisible();
+
+  await page.goto("/scenarios/scenario-1");
+  await expect(page.getByRole("link", { name: "HTML report" })).toHaveAttribute("href", /format=html/);
+  await expect(page.getByRole("link", { name: "JSON export" })).toHaveAttribute("href", /format=json/);
+  await page.getByPlaceholder("Actual outcome").fill("Base case happened");
+  await page.locator('select[name="correction_action"]').selectOption("modify_edge");
+  await page.getByPlaceholder("Target node/edge ID").fill("edge-1");
+  await page.getByText("Resolve prediction with feedback").click();
+  await page.getByRole("button", { name: "Run feedback" }).click();
+  await expect(page.getByRole("heading", { level: 2, name: "Latest prediction" })).toBeVisible();
 
   await page.goto("/settings");
   await page.getByLabel("fast").fill("mock/updated-fast");

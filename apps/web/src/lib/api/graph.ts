@@ -1,5 +1,5 @@
 import { getJson, sendJson } from "./client";
-import type { GraphEdge, GraphNode, GraphSnapshot } from "./types";
+import type { GraphEdge, GraphNode, GraphSnapshot, MergeProposal } from "./types";
 
 export type GraphFilters = {
   scenario_id?: string;
@@ -16,6 +16,7 @@ export type GraphFilters = {
   selected_node?: string;
   selected_edge?: string;
   overlay?: string;
+  layout?: string;
 };
 
 function queryString(params: Record<string, string | undefined> = {}) {
@@ -39,6 +40,7 @@ export const graphApi = {
   createSnapshot: (body: Record<string, unknown>) => sendJson<GraphSnapshot>("POST", "/graph/snapshots", body),
   diffSnapshots: (olderId: string, newerId: string) => getJson<Record<string, string[]>>(`/graph/snapshots/${olderId}/diff/${newerId}`),
   reuseCandidates: (scenarioId: string, q?: string) => getJson<{ nodes: GraphNode[]; edges: GraphEdge[] }>(`/graph/reuse-candidates/${scenarioId}${queryString({ q })}`),
+  mergeProposals: (status?: string) => getJson<MergeProposal[]>(`/graph/merge-proposals${queryString({ status })}`),
   approveMerge: (proposalId: string, body: Record<string, unknown>) => sendJson<Record<string, unknown>>("POST", `/graph/merge-proposals/${proposalId}/approve`, body),
   rejectMerge: (proposalId: string, body: Record<string, unknown>) => sendJson<Record<string, unknown>>("POST", `/graph/merge-proposals/${proposalId}/reject`, body),
 };

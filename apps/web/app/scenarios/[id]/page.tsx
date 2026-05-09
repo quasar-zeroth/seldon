@@ -40,11 +40,19 @@ async function feedbackAction(formData: FormData) {
   "use server";
   const scenarioId = String(formData.get("scenario_id"));
   const predictionId = String(formData.get("prediction_id"));
+  const correctionAction = String(formData.get("correction_action") || "").trim();
+  const graphCorrections = correctionAction ? [{
+    action: correctionAction,
+    target_type: String(formData.get("correction_target_type") || "node"),
+    target_id: String(formData.get("correction_target_id") || "").trim(),
+    rationale: String(formData.get("correction_rationale") || "").trim(),
+  }] : [];
   await scenariosApi.runFeedback(scenarioId, {
     prediction_id: predictionId,
     actual_outcome: String(formData.get("actual_outcome") || ""),
     resolved_outcome_key: String(formData.get("resolved_outcome_key") || "base"),
     notes: String(formData.get("notes") || ""),
+    graph_corrections: graphCorrections,
   });
   revalidatePath(`/scenarios/${scenarioId}`);
 }
@@ -77,7 +85,7 @@ export default async function ScenarioDetail({ params, searchParams }: { params:
       title={scenario.name}
       subtitle={scenario.target_question}
       status={<StatusBadge status={scenario.status} />}
-      action={<a className="button" href={scenariosApi.reportHref(scenario.id)}>Download backend report</a>}
+      action={<><a className="button" href={scenariosApi.reportHref(scenario.id)}>Markdown report</a><a className="button" href={scenariosApi.reportHref(scenario.id, "html")}>HTML report</a><a className="button" href={scenariosApi.reportHref(scenario.id, "json")}>JSON export</a></>}
     />
     <EndpointList endpoints={["GET /scenarios/{id}", "PATCH /scenarios/{id}", "GET /predictions?scenario_id=...", "GET /predictions/{id}/versions", "GET /predictions/{id}/evidence", "POST /scenarios/{id}/jobs/{phase}", "GET /ops/jobs", "GET /runs", "POST /predictions/{id}/run-advanced-intelligence", "POST /scenarios/{id}/run-feedback", "GET /scenarios/{id}/report", "GET /analytics/charts?scenario_id=..."]} />
     <section className="grid">
@@ -126,7 +134,7 @@ export default async function ScenarioDetail({ params, searchParams }: { params:
         {latest ? <div className="form-stack">
           <form action={advancedAction}><input type="hidden" name="scenario_id" value={scenario.id} /><input type="hidden" name="prediction_id" value={latest.id} /><button className="button" type="submit">Run advanced intelligence</button></form>
           {searchParams?.advanced_run ? <p className="muted">Advanced run queued: {searchParams.advanced_run}</p> : null}
-          <form action={feedbackAction} className="form-stack"><input type="hidden" name="scenario_id" value={scenario.id} /><input type="hidden" name="prediction_id" value={latest.id} /><input name="actual_outcome" placeholder="Actual outcome" required /><select name="resolved_outcome_key"><option value="bull">Bull</option><option value="base">Base</option><option value="bear">Bear</option></select><textarea name="notes" placeholder="Feedback notes" rows={2} /><ConfirmMutationDialog label="Resolve prediction with feedback"><button className="button" type="submit">Run feedback</button></ConfirmMutationDialog></form>
+          <form action={feedbackAction} className="form-stack"><input type="hidden" name="scenario_id" value={scenario.id} /><input type="hidden" name="prediction_id" value={latest.id} /><input name="actual_outcome" placeholder="Actual outcome" required /><select name="resolved_outcome_key"><option value="bull">Bull</option><option value="base">Base</option><option value="bear">Bear</option></select><textarea name="notes" placeholder="Feedback notes" rows={2} /><fieldset className="guided-panel"><legend>Guided graph correction</legend><select name="correction_action"><option value="">No graph correction</option><option value="modify_node">Modify node</option><option value="modify_edge">Modify edge</option><option value="add_missing_factor">Add missing factor</option><option value="lower_confidence">Lower confidence</option></select><select name="correction_target_type"><option value="node">Node</option><option value="edge">Edge</option><option value="scenario">Scenario</option></select><input name="correction_target_id" placeholder="Target node/edge ID" /><textarea name="correction_rationale" placeholder="Why this correction is needed" rows={2} /></fieldset><ConfirmMutationDialog label="Resolve prediction with feedback"><button className="button" type="submit">Run feedback</button></ConfirmMutationDialog></form>
         </div> : <EmptyState detail="Generate a prediction before running advanced intelligence or feedback." />}
       </Card>
       <Card title="Charts and analytical visualizations">
