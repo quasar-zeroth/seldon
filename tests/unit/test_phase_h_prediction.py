@@ -7,7 +7,7 @@ from seldon.agents import PredictionCoordinator, ScenarioSynthesisOutput, Synthe
 from seldon.api.app import create_app
 from seldon.config import SeldonConfig
 from seldon.data.database import create_all, make_engine, make_session_factory
-from seldon.data.models import AgentRun, ScenarioPrediction, ScenarioVersion
+from seldon.data.models import AgentRun, BaseRateEvidence, ScenarioPrediction, ScenarioVersion
 from seldon.data.repositories import GraphRepository, KBRepository, ScenarioRepository
 
 
@@ -211,3 +211,75 @@ def test_prediction_api_runs_real_phase_h_workflow_and_exposes_predictions(tmp_p
         "instability_analyzer",
         "scenario_synthesizer",
     }
+
+
+def test_prediction_coordinator_anchors_synthesis_to_base_rates_before_activation(tmp_path):
+    factory = session_factory()
+    with factory() as db:
+        with db.begin():
+            scenario, kb, nodes, _ = seed_phase_h_graph(db)
+            previous = ScenarioRepository(db).create_prediction(
+                scenario_id=scenario.id,
+                statement="Prior gold outlook",
+                timeframe="6 months",
+                resolution_criteria="Resolve with spot gold.",
+                probabilities={"bull": 0.1, "base": 0.8, "bear": 0.1},
+                confidence=0.7,
+                key_drivers=[nodes[0].id],
+                evidence_links=[kb.id],
+                assumptions=["Prior base-rate sample"],
+                status="active",
+            )
+            _, output = PredictionCoordinator(db, config=SeldonConfig(data_dir=tmp_path)).run(
+                PredictionCoordinator.input_from_scenario(scenario, max_driver_nodes=3, export_markdown=False)
+            )
+
+        prediction = db.get(ScenarioPrediction, output.prediction_id)
+        assert prediction is not None
+        assert output.prediction_id == previous.id
+        assert output.base_rates.base_rate_ids
+        assert output.base_rates.priors[0].sample_size >= 1
+        assert output.synthesis.probabilities["base"] > output.synthesis.probabilities["bull"]
+        assert output.activation_gate.activated is True
+        assert prediction.status == "active"
+        assert prediction.calibration_result["activation_gate"]["base_rate_ids"] == output.base_rates.base_rate_ids
+        linked_base_rates = list(db.scalars(select(BaseRateEvidence).where(BaseRateEvidence.prediction_id == prediction.id)))
+        assert {row.id for row in linked_base_rates} >= set(output.base_rates.base_rate_ids)
+
+
+def test_prediction_activation_gate_keeps_flat_red_team_review_as_draft(tmp_path):
+    factory = session_factory()
+    with factory() as db:
+        with db.begin():
+            scenario = ScenarioRepository(db).create_scenario(
+                name="Sparse outlook",
+                target_question="Will the sparse metric move?",
+                time_horizon="3 months",
+            )
+            kb = KBRepository(db).create_entry(
+                content="The sparse metric has limited evidence and no clear directional driver.",
+                topics=["sparse"],
+                entities=["sparse metric"],
+                scenario_ids=[scenario.id],
+            )
+            GraphRepository(db).create_node(
+                name="Sparse metric",
+                type="metric",
+                current_state="No clear current direction.",
+                kb_entry_ids=[kb.id],
+                scenario_ids=[scenario.id],
+                importance_score=0.1,
+                stability_score=0.7,
+            )
+            _, output = PredictionCoordinator(db, config=SeldonConfig(data_dir=tmp_path)).run(
+                PredictionCoordinator.input_from_scenario(scenario, max_driver_nodes=1, min_confidence_to_activate=0.35, export_markdown=False)
+            )
+
+        prediction = db.get(ScenarioPrediction, output.prediction_id)
+        assert prediction is not None
+        assert output.activation_gate.activated is False
+        assert output.activation_gate.red_team.activation_recommendation == "needs_review"
+        assert output.activation_gate.status == "draft"
+        assert any("red-team recommendation" in reason for reason in output.activation_gate.reasons)
+        assert prediction.status == "draft"
+        assert prediction.calibration_result["activation_gate"]["activated"] is False

@@ -168,7 +168,9 @@ class AdversarialRedTeamAgent(AgentBase[AdvancedIntelligenceInput, RedTeamOutput
         ]
         if weak_assumption:
             objections.append(f"If this assumption fails, probabilities should move materially: {weak_assumption}")
-        recommendation = "needs_review" if prediction.confidence < 0.45 or max(probs.values(), default=0.0) < 0.45 else "proceed"
+        weak_distribution = max(probs.values(), default=0.0) < 0.45
+        thin_support = len(prediction.key_drivers or []) < 2 or len(prediction.evidence_links or []) == 0
+        recommendation = "needs_review" if prediction.confidence < 0.45 or (weak_distribution and thin_support) else "proceed"
         return RedTeamOutput(strongest_counterargument=objections[0], pivotal_assumption=weak_assumption, objections=objections[: payload.max_items], activation_recommendation=recommendation)
 
 

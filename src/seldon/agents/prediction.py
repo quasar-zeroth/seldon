@@ -12,9 +12,10 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import select
 
-from seldon.data.models import ERGEdge, ERGNode, Scenario, ScenarioPrediction, ScenarioVersion
+from seldon.data.models import BaseRateEvidence, ERGEdge, ERGNode, Scenario, ScenarioPrediction, ScenarioVersion
 from seldon.data.repositories import AuditRepository, GraphRepository, MarkdownExporter, ScenarioRepository
 
+from .advanced import AdversarialRedTeamAgent, AdvancedIntelligenceInput, RedTeamOutput
 from .base import AgentBase
 
 ForecastDirection = Literal["up", "down", "flat", "uncertain"]
@@ -27,6 +28,7 @@ class PredictionInput(BaseModel):
     timeframe: str = ""
     max_driver_nodes: int = Field(default=8, ge=1, le=50)
     min_confidence_to_activate: float = Field(default=0.35, ge=0.0, le=1.0)
+    require_red_team_proceed: bool = True
     export_markdown: bool = True
 
 
@@ -98,6 +100,25 @@ class SynthesizedOutcome(BaseModel):
     reasoning_trace: str = ""
 
 
+class BaseRatePrior(BaseModel):
+    outcome_key: str
+    observed_frequency: float = Field(ge=0.0, le=1.0)
+    sample_size: int = Field(default=0, ge=0)
+    rationale: str = ""
+    evidence_id: str | None = None
+
+
+class BaseRateAnchorInput(BaseModel):
+    scenario_id: str
+    question: str
+    max_items: int = Field(default=7, ge=1, le=20)
+
+
+class BaseRateAnchorOutput(BaseModel):
+    base_rate_ids: list[str]
+    priors: list[BaseRatePrior]
+
+
 class ScenarioSynthesisInput(BaseModel):
     scenario_id: str
     question: str
@@ -105,6 +126,7 @@ class ScenarioSynthesisInput(BaseModel):
     node_forecasts: list[NodeStateForecast]
     traversal: GraphTraversalOutput
     instability: InstabilityOutput
+    base_rates: BaseRateAnchorOutput | None = None
 
 
 class ScenarioSynthesisOutput(BaseModel):
@@ -127,6 +149,14 @@ class ScenarioSynthesisOutput(BaseModel):
         return self
 
 
+class ActivationGateOutput(BaseModel):
+    base_rate_ids: list[str] = Field(default_factory=list)
+    red_team: RedTeamOutput
+    activated: bool
+    status: str
+    reasons: list[str] = Field(default_factory=list)
+
+
 class PredictionOutput(BaseModel):
     child_run_ids: list[str]
     prediction_id: str
@@ -134,7 +164,9 @@ class PredictionOutput(BaseModel):
     node_forecasts: list[NodeStateForecast]
     traversal: GraphTraversalOutput
     instability: InstabilityOutput
+    base_rates: BaseRateAnchorOutput
     synthesis: ScenarioSynthesisOutput
+    activation_gate: ActivationGateOutput
     markdown_path: str | None = None
 
 
@@ -254,6 +286,63 @@ class GraphTraversalSimulator(AgentBase[GraphTraversalInput, GraphTraversalOutpu
         return GraphTraversalOutput(traversal_log=steps, aggregate_signal=_clamp(aggregate / divisor, -1.0, 1.0), visited_node_ids=sorted(visited))
 
 
+class PredictionBaseRateAnchorer(AgentBase[BaseRateAnchorInput, BaseRateAnchorOutput]):
+    agent_id = "prediction_base_rate_anchorer"
+    phase = "prediction"
+    model_profile = "fast"
+
+    def _run(self, payload: BaseRateAnchorInput, *, run_id: str, parent_run_id: str | None) -> BaseRateAnchorOutput:
+        prior_values = self._historical_priors(payload.scenario_id)
+        if not prior_values:
+            prior_values = {"bull": 0.33, "base": 0.34, "bear": 0.33}
+            sample_size = 0
+            rationale = "Neutral base-rate prior used because no comparable historical predictions exist yet."
+        else:
+            sample_size = int(sum(count for _, count in prior_values.values()))
+            prior_values = {key: value for key, (value, _) in prior_values.items()}
+            rationale = "Base-rate prior computed from comparable persisted Seldon predictions before synthesis."
+
+        normalised = _normalise_probabilities({k: float(v) for k, v in prior_values.items()})
+        rows: list[BaseRateEvidence] = []
+        for key, value in list(normalised.items())[: payload.max_items]:
+            row = BaseRateEvidence(
+                prediction_id=None,
+                scenario_id=payload.scenario_id,
+                metric=f"prior_{key}",
+                population="Comparable Seldon scenario predictions" if sample_size else "Neutral uninformative prior",
+                observed_frequency=value,
+                sample_size=sample_size,
+                rationale=rationale,
+            )
+            self.db.add(row)
+            self.db.flush()
+            rows.append(row)
+        return BaseRateAnchorOutput(
+            base_rate_ids=[row.id for row in rows],
+            priors=[BaseRatePrior(outcome_key=row.metric.removeprefix("prior_"), observed_frequency=row.observed_frequency, sample_size=row.sample_size or 0, rationale=row.rationale, evidence_id=row.id) for row in rows],
+        )
+
+    def _historical_priors(self, scenario_id: str) -> dict[str, tuple[float, int]]:
+        candidates = list(
+            self.db.scalars(
+                select(ScenarioPrediction).where(
+                    ScenarioPrediction.scenario_id == scenario_id,
+                    ScenarioPrediction.status.in_(["active", "monitoring", "resolved"]),
+                )
+            )
+        )
+        if not candidates:
+            candidates = list(self.db.scalars(select(ScenarioPrediction).where(ScenarioPrediction.status.in_(["active", "monitoring", "resolved"]))))
+        totals: dict[str, float] = {}
+        counts: dict[str, int] = {}
+        for prediction in candidates:
+            for key, value in (prediction.probabilities or {}).items():
+                if isinstance(value, int | float):
+                    totals[str(key)] = totals.get(str(key), 0.0) + float(value)
+                    counts[str(key)] = counts.get(str(key), 0) + 1
+        return {key: (totals[key] / counts[key], counts[key]) for key in totals if counts[key]}
+
+
 class InstabilityAnalyzer(AgentBase[InstabilityInput, InstabilityOutput]):
     agent_id = "instability_analyzer"
     phase = "prediction"
@@ -299,7 +388,8 @@ class ScenarioSynthesizer(AgentBase[ScenarioSynthesisInput, ScenarioSynthesisOut
                                 f"Scenario: {scenario.name}\nQuestion: {payload.question}\nTimeframe: {payload.timeframe or scenario.time_horizon}\n"
                                 f"Node forecasts: {[f.model_dump(mode='json') for f in payload.node_forecasts]}\n"
                                 f"Traversal: {payload.traversal.model_dump(mode='json')}\n"
-                                f"Instability: {payload.instability.model_dump(mode='json')}"
+                                f"Instability: {payload.instability.model_dump(mode='json')}\n"
+                                f"Base-rate priors: {payload.base_rates.model_dump(mode='json') if payload.base_rates else {}}"
                             ),
                         }
                     ],
@@ -320,6 +410,10 @@ class ScenarioSynthesizer(AgentBase[ScenarioSynthesisInput, ScenarioSynthesisOut
         bear = 0.33 + max(0.0, -signal) * 0.22 + instability * 0.10
         base = 1.0 - bull - bear
         probabilities = _normalise_probabilities({"bull": bull, "base": base, "bear": bear})
+        if payload.base_rates and payload.base_rates.priors:
+            priors = {prior.outcome_key: prior.observed_frequency for prior in payload.base_rates.priors}
+            blended_keys = set(probabilities) | set(priors)
+            probabilities = _normalise_probabilities({key: 0.75 * probabilities.get(key, 0.0) + 0.25 * priors.get(key, 0.0) for key in blended_keys})
         confidence = _clamp(0.72 - instability * 0.35 + min(0.18, len(payload.node_forecasts) * 0.02))
         driver_ids = [forecast.node_id for forecast in sorted(payload.node_forecasts, key=lambda f: f.confidence, reverse=True)[:5]]
         evidence_ids: set[str] = set()
@@ -336,6 +430,7 @@ class ScenarioSynthesizer(AgentBase[ScenarioSynthesisInput, ScenarioSynthesisOut
             "Current KB evidence remains materially valid through the forecast horizon.",
             "Persisted ERG relationships are directionally correct enough for traversal simulation.",
             "No unobserved shock dominates the listed key drivers.",
+            "Scenario probabilities are anchored against available base-rate priors before activation.",
         ]
         outcomes = [
             SynthesizedOutcome(outcome=f"Bull case for: {scenario.target_question}", probability=probabilities["bull"], confidence=confidence, key_drivers=driver_ids, key_assumptions=assumptions[:2], stability=stability, reasoning_trace=f"Positive graph signal={signal:.2f}; instability={instability:.2f}."),
@@ -362,8 +457,8 @@ class PredictionCoordinator(AgentBase[PredictionInput, PredictionOutput]):
     model_profile = "reasoning"
 
     @classmethod
-    def input_from_scenario(cls, scenario: Scenario, *, max_driver_nodes: int = 8, min_confidence_to_activate: float = 0.35, export_markdown: bool = True) -> PredictionInput:
-        return PredictionInput(scenario_id=scenario.id, question=scenario.target_question, timeframe=scenario.time_horizon, max_driver_nodes=max_driver_nodes, min_confidence_to_activate=min_confidence_to_activate, export_markdown=export_markdown)
+    def input_from_scenario(cls, scenario: Scenario, *, max_driver_nodes: int = 8, min_confidence_to_activate: float = 0.35, require_red_team_proceed: bool = True, export_markdown: bool = True) -> PredictionInput:
+        return PredictionInput(scenario_id=scenario.id, question=scenario.target_question, timeframe=scenario.time_horizon, max_driver_nodes=max_driver_nodes, min_confidence_to_activate=min_confidence_to_activate, require_red_team_proceed=require_red_team_proceed, export_markdown=export_markdown)
 
     def _run(self, payload: PredictionInput, *, run_id: str, parent_run_id: str | None) -> PredictionOutput:
         scenario = self.db.get(Scenario, payload.scenario_id)
@@ -382,14 +477,16 @@ class PredictionCoordinator(AgentBase[PredictionInput, PredictionOutput]):
         child_run_ids.append(t_run)
         i_run, instability = InstabilityAnalyzer(self.db, config=self.config, llm_client=self.llm_client).run(InstabilityInput(scenario_id=payload.scenario_id, traversal=traversal), parent_run_id=run_id)
         child_run_ids.append(i_run)
-        s_run, synthesis = ScenarioSynthesizer(self.db, config=self.config, llm_client=self.llm_client).run(ScenarioSynthesisInput(scenario_id=payload.scenario_id, question=payload.question, timeframe=payload.timeframe, node_forecasts=forecasts, traversal=traversal, instability=instability), parent_run_id=run_id)
+        b_run, base_rates = PredictionBaseRateAnchorer(self.db, config=self.config, llm_client=self.llm_client).run(BaseRateAnchorInput(scenario_id=payload.scenario_id, question=payload.question), parent_run_id=run_id)
+        child_run_ids.append(b_run)
+        s_run, synthesis = ScenarioSynthesizer(self.db, config=self.config, llm_client=self.llm_client).run(ScenarioSynthesisInput(scenario_id=payload.scenario_id, question=payload.question, timeframe=payload.timeframe, node_forecasts=forecasts, traversal=traversal, instability=instability, base_rates=base_rates), parent_run_id=run_id)
         child_run_ids.append(s_run)
 
         repo = ScenarioRepository(self.db)
         existing = self.db.scalar(select(ScenarioPrediction).where(ScenarioPrediction.scenario_id == payload.scenario_id, ScenarioPrediction.status.in_(["draft", "active", "monitoring"])).order_by(ScenarioPrediction.updated_at.desc()))
         now = datetime.now(timezone.utc).isoformat()
         probability_history = [{"date": now, **synthesis.probabilities, "trigger": "Phase H prediction synthesis"}]
-        status = "active" if synthesis.confidence >= payload.min_confidence_to_activate else "draft"
+        status = "draft"
         values: dict[str, Any] = {
             "scenario_id": payload.scenario_id,
             "statement": synthesis.statement,
@@ -411,8 +508,39 @@ class PredictionCoordinator(AgentBase[PredictionInput, PredictionOutput]):
             history = [*(existing.probability_history or []), *probability_history]
             prediction = repo.update_prediction(existing.id, actor=self.agent_id, reason="Phase H prediction refresh", probability_history=history, **values)
             version = self.db.scalar(select(ScenarioVersion.version).where(ScenarioVersion.scenario_prediction_id == prediction.id).order_by(ScenarioVersion.version.desc())) or 1
+        for base_rate_id in base_rates.base_rate_ids:
+            row = self.db.get(BaseRateEvidence, base_rate_id)
+            if row is not None:
+                row.prediction_id = prediction.id
+
+        r_run, red_team = AdversarialRedTeamAgent(self.db, config=self.config, llm_client=self.llm_client).run(AdvancedIntelligenceInput(prediction_id=prediction.id, max_items=5), parent_run_id=run_id)
+        child_run_ids.append(r_run)
+        gate_reasons: list[str] = []
+        if synthesis.confidence < payload.min_confidence_to_activate:
+            gate_reasons.append(f"synthesis confidence {synthesis.confidence:.2f} below activation threshold {payload.min_confidence_to_activate:.2f}")
+        if payload.require_red_team_proceed and red_team.activation_recommendation != "proceed":
+            gate_reasons.append(f"red-team recommendation is {red_team.activation_recommendation}")
+        activated = not gate_reasons
+        final_status = "active" if activated else "draft"
+        prediction.status = final_status
+        prediction.calibration_result = {
+            **(prediction.calibration_result or {}),
+            "activation_gate": {
+                "base_rate_ids": base_rates.base_rate_ids,
+                "red_team": red_team.model_dump(mode="json"),
+                "activated": activated,
+                "status": final_status,
+                "reasons": gate_reasons,
+            },
+        }
+        latest_version = self.db.scalar(select(ScenarioVersion).where(ScenarioVersion.scenario_prediction_id == prediction.id).order_by(ScenarioVersion.version.desc()))
+        if latest_version is not None:
+            latest_version.snapshot = {**latest_version.snapshot, "status": final_status, "calibration_result": prediction.calibration_result}
+        self.db.flush()
+        activation_gate = ActivationGateOutput(base_rate_ids=base_rates.base_rate_ids, red_team=red_team, activated=activated, status=final_status, reasons=gate_reasons)
+
         markdown_path = None
         if payload.export_markdown:
             markdown_path = str(MarkdownExporter(self.config.data_dir / "exports").export_scenario(prediction))
-        AuditRepository(self.db).emit("scenario", payload.scenario_id, "prediction_synthesis", actor=self.agent_id, reason="Phase H produced versioned prediction", after={"prediction_id": prediction.id, "version": version, "child_run_ids": child_run_ids})
-        return PredictionOutput(child_run_ids=child_run_ids, prediction_id=prediction.id, version=version, node_forecasts=forecasts, traversal=traversal, instability=instability, synthesis=synthesis, markdown_path=markdown_path)
+        AuditRepository(self.db).emit("scenario", payload.scenario_id, "prediction_synthesis", actor=self.agent_id, reason="Phase H produced versioned prediction with base-rate and red-team activation gates", after={"prediction_id": prediction.id, "version": version, "child_run_ids": child_run_ids, "activation_gate": activation_gate.model_dump(mode="json")})
+        return PredictionOutput(child_run_ids=child_run_ids, prediction_id=prediction.id, version=version, node_forecasts=forecasts, traversal=traversal, instability=instability, base_rates=base_rates, synthesis=synthesis, activation_gate=activation_gate, markdown_path=markdown_path)

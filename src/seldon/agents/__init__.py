@@ -64,10 +64,15 @@ from .graph_construction import (
     RelationshipCandidate,
 )
 from .prediction import (
+    ActivationGateOutput,
+    BaseRateAnchorInput,
+    BaseRateAnchorOutput,
+    BaseRatePrior,
     GraphTraversalInput,
     GraphTraversalSimulator,
     GraphTraversalOutput,
     InstabilityAnalyzer,
+    PredictionBaseRateAnchorer,
     InstabilityOutput,
     NodeStateForecast,
     NodeStatePredictor,
@@ -81,12 +86,16 @@ from .prediction import (
 from .retrieval import ExternalRetrievalProvider, ExternalSearchResult, RawDocument, StaticExternalRetrievalProvider
 
 __all__ = [
+    "ActivationGateOutput",
     "AdversarialRedTeamAgent",
     "AdvancedIntelligenceCoordinator",
     "AdvancedIntelligenceInput",
     "AdvancedIntelligenceOutput",
     "AssumptionRegistry",
     "BaseRateAnchorer",
+    "BaseRateAnchorInput",
+    "BaseRateAnchorOutput",
+    "BaseRatePrior",
     "CascadeRiskScorer",
     "ConsistencyIssue",
     "ContextGatheringCoordinator",
@@ -136,6 +145,7 @@ __all__ = [
     "NodeStateForecast",
     "NodeStatePredictor",
     "PairwiseRelationshipDetector",
+    "PredictionBaseRateAnchorer",
     "PredictionCoordinator",
     "PredictionInput",
     "PredictionOutput",

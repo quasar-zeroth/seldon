@@ -95,6 +95,7 @@ class GraphConstructionRequest(BaseModel):
 class PredictionRequest(BaseModel):
     max_driver_nodes: int = Field(default=8, ge=1, le=50)
     min_confidence_to_activate: float = Field(default=0.35, ge=0.0, le=1.0)
+    require_red_team_proceed: bool = True
     export_markdown: bool = True
 
 
@@ -656,6 +657,7 @@ def create_app(
                 scenario,
                 max_driver_nodes=request.max_driver_nodes,
                 min_confidence_to_activate=request.min_confidence_to_activate,
+                require_red_team_proceed=request.require_red_team_proceed,
                 export_markdown=request.export_markdown,
             )
             run_id, output = PredictionCoordinator(db, config=cfg, llm_client=llm).run(agent_input)
