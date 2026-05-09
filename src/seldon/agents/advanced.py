@@ -11,8 +11,10 @@ from seldon.data.models import (
     AdvancedAnalysis,
     AssumptionRecord,
     BaseRateEvidence,
+    ERGEdge,
     HistoricalAnalogy,
     KBEntry,
+    Scenario,
     ScenarioPrediction,
     ScenarioVersion,
     SentimentDrift,
@@ -155,7 +157,8 @@ class AdversarialRedTeamAgent(AgentBase[AdvancedIntelligenceInput, RedTeamOutput
                     escalation_profiles=("reasoning",),
                 )
                 output = RedTeamOutput.model_validate(result)
-                return output.model_copy(update={"objections": output.objections[: payload.max_items]})
+                objections = output.objections or ([output.strongest_counterargument] if output.strongest_counterargument else [])
+                return output.model_copy(update={"objections": objections[: payload.max_items]})
             except Exception as exc:
                 self.runs.add_message(run_id, "system", "AdversarialRedTeamAgent LLM path failed; using deterministic fallback.", payload={"error": str(exc)})
 
@@ -342,6 +345,247 @@ class CascadeRiskScorer(AgentBase[AdvancedIntelligenceInput, CascadeRiskOutput])
         risks.sort(key=lambda r: r["cascade_risk"], reverse=True)
         return CascadeRiskOutput(risks=risks[: payload.max_items])
 
+
+
+
+class SharedGraphInput(BaseModel):
+    scenario_id: str
+    query: str | None = None
+    max_items: int = Field(default=10, ge=1, le=50)
+    accepted_node_ids: list[str] = Field(default_factory=list)
+    accepted_edge_ids: list[str] = Field(default_factory=list)
+    import_accepted: bool = False
+
+
+class SharedGraphProposal(BaseModel):
+    node_id: str
+    node_name: str
+    source_scenario_ids: list[str]
+    score: float = Field(ge=0.0, le=1.0)
+    rationale: str
+    related_edge_ids: list[str] = Field(default_factory=list)
+
+
+class SharedGraphManagerOutput(BaseModel):
+    proposals: list[SharedGraphProposal]
+    imported_node_ids: list[str] = Field(default_factory=list)
+    imported_edge_ids: list[str] = Field(default_factory=list)
+    lineage: dict[str, Any] = Field(default_factory=dict)
+    propagation_alerts: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class CrossScenarioCorrelationInput(BaseModel):
+    scenario_id: str | None = None
+    max_items: int = Field(default=10, ge=1, le=50)
+
+
+class CrossScenarioCorrelationOutput(BaseModel):
+    contradictory_predictions: list[dict[str, Any]] = Field(default_factory=list)
+    shared_dependency_changes: list[dict[str, Any]] = Field(default_factory=list)
+    scenario_synergies: list[dict[str, Any]] = Field(default_factory=list)
+    correlation_clusters: list[dict[str, Any]] = Field(default_factory=list)
+
+
+def _scenario_terms(scenario: Any) -> set[str]:
+    text = " ".join([scenario.name or "", scenario.description or "", scenario.target_question or "", scenario.time_horizon or ""])
+    return {term for term in text.lower().replace("/", " ").replace("-", " ").split() if len(term) >= 4}
+
+
+def _shared_items(left: list[str] | None, right: list[str] | None) -> list[str]:
+    return sorted(set(left or []) & set(right or []))
+
+
+class SharedGraphManager(AgentBase[SharedGraphInput, SharedGraphManagerOutput]):
+    """Propose and optionally import reusable graph structure across scenarios.
+
+    The manager treats persisted ERG nodes/edges as shared canonical objects. Importing
+    appends the target scenario id to selected nodes/edges instead of cloning rows, so
+    future updates naturally propagate through the shared object while audit entries
+    preserve the lineage decision.
+    """
+
+    agent_id = "shared_graph_manager"
+    phase = "cross_scenario_intelligence"
+    model_profile = "balanced"
+
+    def _run(self, payload: SharedGraphInput, *, run_id: str, parent_run_id: str | None) -> SharedGraphManagerOutput:
+        scenario = self.db.get(Scenario, payload.scenario_id)
+        if scenario is None:
+            raise KeyError(f"scenario not found: {payload.scenario_id}")
+        graph = GraphRepository(self.db)
+        candidates = graph.reuse_candidates(payload.scenario_id, query=payload.query)
+        target_terms = _scenario_terms(scenario)
+        target_entries = [e for e in self.db.scalars(select(KBEntry)) if payload.scenario_id in (e.scenario_ids or [])]
+        target_topics = {t.lower() for e in target_entries for t in (e.topics or [])}
+        target_entities = {e.lower() for entry in target_entries for e in (entry.entities or [])}
+
+        proposals: list[SharedGraphProposal] = []
+        for node in candidates["nodes"]:
+            node_terms = _scenario_terms(type("ScenarioLike", (), {"name": node.name, "description": node.description, "target_question": node.current_state or "", "time_horizon": ""})())
+            node_kb = [self.db.get(KBEntry, kb_id) for kb_id in (node.kb_entry_ids or [])]
+            node_topics = {t.lower() for entry in node_kb if entry is not None for t in (entry.topics or [])}
+            node_entities = {e.lower() for entry in node_kb if entry is not None for e in (entry.entities or [])}
+            related_edges = [edge.id for edge in candidates["edges"] if edge.source_node_id == node.id or edge.target_node_id == node.id]
+            overlap = len(target_terms & node_terms) + len(target_topics & node_topics) + len(target_entities & node_entities)
+            scenario_reuse = len(node.scenario_ids or [])
+            evidence_bonus = min(2, len(node.kb_entry_ids or []))
+            score = min(1.0, 0.18 * overlap + 0.12 * scenario_reuse + 0.08 * evidence_bonus + 0.08 * len(related_edges))
+            if payload.query and payload.query.lower() in f"{node.name} {node.description}".lower():
+                score = min(1.0, score + 0.25)
+            if score <= 0.0:
+                continue
+            rationale_bits = []
+            if target_terms & node_terms:
+                rationale_bits.append(f"shared terms: {', '.join(sorted(target_terms & node_terms)[:4])}")
+            if target_topics & node_topics:
+                rationale_bits.append(f"shared topics: {', '.join(sorted(target_topics & node_topics)[:4])}")
+            if target_entities & node_entities:
+                rationale_bits.append(f"shared entities: {', '.join(sorted(target_entities & node_entities)[:4])}")
+            if related_edges:
+                rationale_bits.append(f"{len(related_edges)} reusable relationships")
+            proposals.append(
+                SharedGraphProposal(
+                    node_id=node.id,
+                    node_name=node.name,
+                    source_scenario_ids=list(node.scenario_ids or []),
+                    score=score,
+                    rationale="; ".join(rationale_bits) or "reusable cross-scenario graph node",
+                    related_edge_ids=related_edges,
+                )
+            )
+        proposals.sort(key=lambda p: p.score, reverse=True)
+        proposals = proposals[: payload.max_items]
+
+        imported_nodes: list[str] = []
+        imported_edges: list[str] = []
+        lineage: dict[str, Any] = {}
+        propagation_alerts: list[dict[str, Any]] = []
+        if payload.import_accepted:
+            accepted_nodes = set(payload.accepted_node_ids)
+            accepted_edges = set(payload.accepted_edge_ids)
+            # Pull in relationship rows for accepted nodes when both endpoints are in or already belong to the target scenario.
+            for edge in candidates["edges"]:
+                if edge.id in accepted_edges or edge.source_node_id in accepted_nodes or edge.target_node_id in accepted_nodes:
+                    accepted_edges.add(edge.id)
+                    accepted_nodes.add(edge.source_node_id)
+                    accepted_nodes.add(edge.target_node_id)
+            for node_id in sorted(accepted_nodes):
+                node = graph.get_node(node_id)
+                if node is None:
+                    continue
+                before = list(node.scenario_ids or [])
+                if payload.scenario_id not in before:
+                    graph.update_node(node.id, scenario_ids=[*before, payload.scenario_id])
+                    imported_nodes.append(node.id)
+                    lineage[node.id] = {"imported_from_scenario_ids": before, "imported_to_scenario_id": payload.scenario_id, "kind": "shared_node"}
+                    if len(before) >= 1:
+                        propagation_alerts.append({"entity_type": "erg_node", "entity_id": node.id, "message": f"Future updates to {node.name} now affect scenarios {sorted({*before, payload.scenario_id})}."})
+            for edge_id in sorted(accepted_edges):
+                edge = self.db.get(ERGEdge, edge_id)
+                if edge is None:
+                    continue
+                before = list(edge.scenario_ids or [])
+                if payload.scenario_id not in before:
+                    graph.update_edge(edge.id, scenario_ids=[*before, payload.scenario_id])
+                    imported_edges.append(edge.id)
+                    lineage[edge.id] = {"imported_from_scenario_ids": before, "imported_to_scenario_id": payload.scenario_id, "kind": "shared_edge", "source_node_id": edge.source_node_id, "target_node_id": edge.target_node_id}
+                    propagation_alerts.append({"entity_type": "erg_edge", "entity_id": edge.id, "message": "Shared relationship imported; downstream graph traversals can reuse this dependency."})
+            AuditRepository(self.db).emit("scenario", payload.scenario_id, "shared_graph_import", actor=self.agent_id, reason="Imported accepted reusable graph structure", after={"node_ids": imported_nodes, "edge_ids": imported_edges, "lineage": lineage})
+        return SharedGraphManagerOutput(proposals=proposals, imported_node_ids=imported_nodes, imported_edge_ids=imported_edges, lineage=lineage, propagation_alerts=propagation_alerts)
+
+
+class CrossScenarioCorrelationDetector(AgentBase[CrossScenarioCorrelationInput, CrossScenarioCorrelationOutput]):
+    """Detect contradictions, synergies, shared dependencies, and scenario clusters."""
+
+    agent_id = "cross_scenario_correlation_detector"
+    phase = "cross_scenario_intelligence"
+    model_profile = "balanced"
+
+    def _run(self, payload: CrossScenarioCorrelationInput, *, run_id: str, parent_run_id: str | None) -> CrossScenarioCorrelationOutput:
+        graph = GraphRepository(self.db)
+        predictions = list(self.db.scalars(select(ScenarioPrediction)))
+        if payload.scenario_id:
+            focus = payload.scenario_id
+            predictions = [p for p in predictions if p.scenario_id == focus or self._shares_dependencies(p.scenario_id, focus, graph)]
+        contradictions: list[dict[str, Any]] = []
+        synergies: list[dict[str, Any]] = []
+        for i, left in enumerate(predictions):
+            for right in predictions[i + 1 :]:
+                if not left.scenario_id or not right.scenario_id or left.scenario_id == right.scenario_id:
+                    continue
+                shared_drivers = _shared_items(left.key_drivers, right.key_drivers)
+                shared_evidence = _shared_items(left.evidence_links, right.evidence_links)
+                if not shared_drivers and not shared_evidence:
+                    continue
+                left_top = max(_probabilities(left), key=_probabilities(left).get, default=None)
+                right_top = max(_probabilities(right), key=_probabilities(right).get, default=None)
+                left_text = f"{left.statement} {left_top or ''}".lower()
+                right_text = f"{right.statement} {right_top or ''}".lower()
+                opposite = any(a in left_text and b in right_text for a, b in [("rise", "fall"), ("bull", "bear"), ("increase", "decrease"), ("higher", "lower")]) or any(a in right_text and b in left_text for a, b in [("rise", "fall"), ("bull", "bear"), ("increase", "decrease"), ("higher", "lower")])
+                strength = min(1.0, 0.18 * len(shared_drivers) + 0.1 * len(shared_evidence) + (0.35 if opposite else 0.0))
+                row = {
+                    "left_prediction_id": left.id,
+                    "right_prediction_id": right.id,
+                    "left_scenario_id": left.scenario_id,
+                    "right_scenario_id": right.scenario_id,
+                    "shared_driver_ids": shared_drivers,
+                    "shared_evidence_ids": shared_evidence,
+                    "score": strength,
+                }
+                if opposite:
+                    contradictions.append({**row, "rationale": "Shared dependencies support predictions with opposing directional language or top-case labels."})
+                else:
+                    synergies.append({**row, "rationale": "Predictions reuse common drivers/evidence and may move together."})
+
+        dependency_changes: list[dict[str, Any]] = []
+        nodes = graph.list_nodes()
+        for node in nodes:
+            scenarios = sorted(set(node.scenario_ids or []))
+            if len(scenarios) < 2:
+                continue
+            if payload.scenario_id and payload.scenario_id not in scenarios:
+                continue
+            if node.stability_score < 0.45 or node.importance_score > 0.65:
+                dependency_changes.append({
+                    "node_id": node.id,
+                    "node_name": node.name,
+                    "scenario_ids": scenarios,
+                    "stability_score": node.stability_score,
+                    "importance_score": node.importance_score,
+                    "rationale": "Shared dependency is unstable and/or important enough to trigger dependent-scenario review.",
+                })
+
+        clusters: list[dict[str, Any]] = []
+        scenario_ids = sorted({sid for node in nodes for sid in (node.scenario_ids or [])})
+        for sid in scenario_ids:
+            if payload.scenario_id and sid != payload.scenario_id and not self._shares_dependencies(sid, payload.scenario_id, graph):
+                continue
+            related = []
+            sid_nodes = {node.id for node in nodes if sid in (node.scenario_ids or [])}
+            for other in scenario_ids:
+                if other == sid:
+                    continue
+                other_nodes = {node.id for node in nodes if other in (node.scenario_ids or [])}
+                shared = sorted(sid_nodes & other_nodes)
+                if shared:
+                    related.append({"scenario_id": other, "shared_node_ids": shared, "overlap": len(shared)})
+            if related:
+                related.sort(key=lambda row: row["overlap"], reverse=True)
+                clusters.append({"scenario_id": sid, "related_scenarios": related[: payload.max_items], "shared_node_count": sum(r["overlap"] for r in related)})
+        clusters.sort(key=lambda row: row["shared_node_count"], reverse=True)
+
+        return CrossScenarioCorrelationOutput(
+            contradictory_predictions=contradictions[: payload.max_items],
+            shared_dependency_changes=dependency_changes[: payload.max_items],
+            scenario_synergies=synergies[: payload.max_items],
+            correlation_clusters=clusters[: payload.max_items],
+        )
+
+    @staticmethod
+    def _shares_dependencies(left_scenario_id: str | None, right_scenario_id: str | None, graph: GraphRepository) -> bool:
+        if not left_scenario_id or not right_scenario_id:
+            return False
+        return any(left_scenario_id in (node.scenario_ids or []) and right_scenario_id in (node.scenario_ids or []) for node in graph.list_nodes())
 
 class AdvancedIntelligenceCoordinator(AgentBase[AdvancedIntelligenceInput, AdvancedIntelligenceOutput]):
     agent_id = "advanced_intelligence_coordinator"
