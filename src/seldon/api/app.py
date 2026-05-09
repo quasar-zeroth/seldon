@@ -1,6 +1,8 @@
 """FastAPI application shell for The Seldon Project."""
 from __future__ import annotations
 
+import asyncio
+import json
 import logging
 import os
 from collections.abc import AsyncIterator, Iterator
@@ -10,7 +12,7 @@ from typing import Any
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, PlainTextResponse
+from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
 from sqlalchemy import Engine, or_, select
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -200,7 +202,7 @@ def create_app(
         bind = session_factory.kw.get("bind")
         engine = bind if isinstance(bind, Engine) else None
     app_llm_client = llm_client or OpenRouterClient(app_config.llm)
-    app_job_queue = job_queue or InProcessJobQueue()
+    app_job_queue = job_queue or InProcessJobQueue(session_factory=session_factory)
 
     def get_config_dep() -> SeldonConfig:
         return app_config
@@ -495,7 +497,8 @@ def create_app(
             raise not_found("scenario", scenario_id)
         if phase not in {"context_gathering", "extraction", "graph_construction", "prediction"}:
             raise HTTPException(status_code=422, detail={"code": "validation_error", "message": f"unsupported phase: {phase}"})
-        job = app_job_queue.enqueue("phase", {"scenario_id": scenario_id, "phase": phase, "request": payload or {}})
+        idempotency_key = (payload or {}).get("idempotency_key") if isinstance(payload, dict) else None
+        job = app_job_queue.enqueue("phase", {"scenario_id": scenario_id, "phase": phase, "request": payload or {}}, idempotency_key=idempotency_key if isinstance(idempotency_key, str) else None)
         return job.to_dict()
 
     @app.get("/scenarios/{scenario_id}/report", response_class=PlainTextResponse)
@@ -1247,7 +1250,68 @@ def create_app(
     def list_run_messages(run_id: str, db: Session = Depends(get_session_dep)) -> list[dict[str, Any]]:
         if db.get(AgentRun, run_id) is None:
             raise not_found("agent_run", run_id)
-        return _rows(list(db.scalars(select(AgentMessage).where(AgentMessage.agent_run_id == run_id).order_by(AgentMessage.created_at))))
+        return _rows(AgentRunRepository(db).timeline(run_id))
+
+    @app.get("/runs/{run_id}/timeline")
+    def get_run_timeline(run_id: str, db: Session = Depends(get_session_dep)) -> dict[str, Any]:
+        run = db.get(AgentRun, run_id)
+        if run is None:
+            raise not_found("agent_run", run_id)
+        return {"run": _row(run), "messages": _rows(AgentRunRepository(db).timeline(run_id)), "model_invocations": _rows(list(db.scalars(select(ModelInvocation).where(ModelInvocation.agent_run_id == run_id))))}
+
+    def _sse_event(event: str, data: dict[str, Any], *, id: str | None = None) -> str:
+        prefix = f"id: {id}\n" if id else ""
+        return f"{prefix}event: {event}\ndata: {json.dumps(data, default=str)}\n\n"
+
+    @app.get("/events/runs")
+    async def run_events(run_id: str | None = None, once: bool = True, poll_seconds: float = Query(default=1.0, ge=0.1, le=30.0)) -> StreamingResponse:
+        async def stream() -> AsyncIterator[str]:
+            last_seen: str | None = None
+            while True:
+                assert session_factory is not None
+                with session_factory() as session:
+                    stmt = select(AgentRun).order_by(AgentRun.updated_at)
+                    if run_id:
+                        stmt = stmt.where(AgentRun.id == run_id)
+                    runs = list(session.scalars(stmt))
+                    messages = list(session.scalars(select(AgentMessage).order_by(AgentMessage.created_at)))
+                    if run_id:
+                        messages = [message for message in messages if message.agent_run_id == run_id]
+                    for run in runs:
+                        event_id = f"run:{run.id}:{run.updated_at.isoformat()}"
+                        if event_id != last_seen:
+                            yield _sse_event("run", _row(run), id=event_id)
+                            last_seen = event_id
+                    for message in messages:
+                        yield _sse_event("agent_message", _row(message), id=f"message:{message.id}")
+                if once:
+                    break
+                await asyncio.sleep(poll_seconds)
+
+        return StreamingResponse(stream(), media_type="text/event-stream")
+
+    @app.get("/events/scenarios/{scenario_id}")
+    async def scenario_events(scenario_id: str, once: bool = True, poll_seconds: float = Query(default=1.0, ge=0.1, le=30.0)) -> StreamingResponse:
+        async def stream() -> AsyncIterator[str]:
+            while True:
+                assert session_factory is not None
+                with session_factory() as session:
+                    scenario = session.get(Scenario, scenario_id)
+                    if scenario is None:
+                        yield _sse_event("error", {"code": "not_found", "message": f"scenario not found: {scenario_id}"})
+                    else:
+                        yield _sse_event("scenario", _row(scenario), id=f"scenario:{scenario.id}:{scenario.updated_at.isoformat()}")
+                        predictions = list(session.scalars(select(ScenarioPrediction).where(ScenarioPrediction.scenario_id == scenario_id).order_by(ScenarioPrediction.updated_at)))
+                        for prediction in predictions:
+                            yield _sse_event("prediction", _row(prediction), id=f"prediction:{prediction.id}:{prediction.updated_at.isoformat()}")
+                        runs = [run for run in session.scalars(select(AgentRun).order_by(AgentRun.updated_at)) if (run.input or {}).get("scenario_id") == scenario_id or (run.input or {}).get("payload", {}).get("scenario_id") == scenario_id]
+                        for run in runs:
+                            yield _sse_event("run", _row(run), id=f"run:{run.id}:{run.updated_at.isoformat()}")
+                if once:
+                    break
+                await asyncio.sleep(poll_seconds)
+
+        return StreamingResponse(stream(), media_type="text/event-stream")
 
     @app.post("/runs/{run_id}/model-invocations", status_code=201)
     def add_run_model_invocation(run_id: str, payload: ModelInvocationCreate, db: Session = Depends(get_session_dep)) -> dict[str, Any]:
@@ -1440,7 +1504,9 @@ def create_app(
         job_payload = payload.get("payload", {})
         if not isinstance(job_payload, dict):
             raise HTTPException(status_code=422, detail={"code": "validation_error", "message": "job payload must be an object"})
-        job = app_job_queue.enqueue(kind, job_payload)
+        idempotency_key = payload.get("idempotency_key")
+        max_attempts = int(payload.get("max_attempts", 3))
+        job = app_job_queue.enqueue(kind, job_payload, idempotency_key=idempotency_key if isinstance(idempotency_key, str) else None, max_attempts=max_attempts)
         return job.to_dict()
 
     @app.get("/ops/jobs")

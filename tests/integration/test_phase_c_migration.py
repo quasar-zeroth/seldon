@@ -21,3 +21,4 @@ def test_alembic_migration_smoke(tmp_path):
     assert "scenarios" in tables
     assert "feedback_entries" in tables
     assert "graph_snapshots" in tables
+    assert "ops_jobs" in tables

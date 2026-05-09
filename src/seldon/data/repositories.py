@@ -509,6 +509,14 @@ class AgentRunRepository(BaseRepository[AgentRun]):
         self.audit.emit("agent_message", row.id, "create", after=row_to_dict(row))
         return row
 
+    def publish(self, run_id: str, event_type: str, *, content: str | None = None, payload: dict[str, Any] | None = None) -> AgentMessage:
+        """Publish a structured inter-agent message on the run timeline."""
+        envelope = {"event_type": event_type, **(payload or {})}
+        return self.add_message(run_id, "event", content or event_type, payload=envelope)
+
+    def timeline(self, run_id: str) -> list[AgentMessage]:
+        return list(self.session.scalars(select(AgentMessage).where(AgentMessage.agent_run_id == run_id).order_by(AgentMessage.created_at)))
+
     def record_invocation(self, **values: Any) -> ModelInvocation:
         row = ModelInvocation(**values)
         self.session.add(row)

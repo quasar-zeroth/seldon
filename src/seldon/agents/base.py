@@ -63,14 +63,17 @@ class AgentBase(Generic[InputT, OutputT]):
         original_llm_client = self.llm_client
         if isinstance(original_llm_client, OpenRouterClient):
             self.llm_client = self._db_recording_llm_client(run.id, original_llm_client)
+        self.runs.publish(run.id, "run.started", payload={"agent_id": self.agent_id, "phase": self.phase, "parent_run_id": parent_run_id})
         try:
             output = self._run(payload, run_id=run.id, parent_run_id=parent_run_id)
             elapsed_ms = int((time.perf_counter() - started) * 1000)
             self.runs.update(run.id, status="completed", output=output.model_dump(mode="json"), elapsed_ms=elapsed_ms)
+            self.runs.publish(run.id, "run.completed", payload={"agent_id": self.agent_id, "phase": self.phase, "elapsed_ms": elapsed_ms})
             return run.id, output
         except Exception as exc:
             elapsed_ms = int((time.perf_counter() - started) * 1000)
             self.runs.update(run.id, status="failed", error=str(exc), elapsed_ms=elapsed_ms)
+            self.runs.publish(run.id, "run.failed", payload={"agent_id": self.agent_id, "phase": self.phase, "elapsed_ms": elapsed_ms, "error": str(exc)})
             raise
         finally:
             self.llm_client = original_llm_client
