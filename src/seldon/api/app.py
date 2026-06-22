@@ -5,6 +5,8 @@ import asyncio
 import json
 import logging
 import os
+import re
+import shutil
 from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager
 from typing import Any
@@ -13,12 +15,13 @@ from fastapi import Depends, FastAPI, HTTPException, Query, Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, StreamingResponse
-from sqlalchemy import Engine, or_, select
+from sqlalchemy import Engine, func, or_, select
 from sqlalchemy.orm import Session, sessionmaker
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 from seldon.agents import AdvancedIntelligenceCoordinator, AdvancedIntelligenceInput, ContextGatheringCoordinator, ConvergenceLoopCoordinator, ConvergenceLoopInput, ExtractionCoordinator, FeedbackCoordinator, FeedbackInput, GraphConstructionCoordinator, PredictionCoordinator, compute_calibration_summary
+from seldon.agents.providers import build_providers_from_config
 from seldon.config import SeldonConfig, config_from_env
 from seldon.data.database import create_all, make_engine, make_session_factory
 from seldon.data.models import (
@@ -26,6 +29,8 @@ from seldon.data.models import (
     AgentMessage,
     AgentRun,
     AuditLog,
+    AssumptionRecord,
+    Base,
     BaseRateEvidence,
     ERGEdge,
     ERGNode,
@@ -59,6 +64,8 @@ from seldon.data.schemas import (
     KBEntryUpdate,
     ModelInvocationCreate,
     ScenarioCreate,
+    ScenarioDraftRequest,
+    ScenarioDraftResponse,
     ScenarioEvidenceLinkCreate,
     ScenarioPredictionCreate,
     ScenarioPredictionUpdate,
@@ -66,6 +73,7 @@ from seldon.data.schemas import (
     SourceCreate,
     SourceUpdate,
 )
+from seldon.llm import build_llm_client
 from seldon.llm.openrouter import OpenRouterClient
 from seldon.ops import InProcessJobQueue, configure_structured_logging, create_backup, seed_demo_data
 
@@ -87,7 +95,7 @@ class ExtractionRequest(BaseModel):
 
 class GraphConstructionRequest(BaseModel):
     max_candidate_pairs: int = Field(default=40, ge=1, le=500)
-    min_confidence_to_write: float = Field(default=0.35, ge=0.0, le=1.0)
+    min_confidence_to_write: float = Field(default=0.5, ge=0.0, le=1.0)
     run_convergence_loop: bool = False
     max_iterations: int = Field(default=3, ge=1, le=10)
     min_new_info_threshold: float = Field(default=0.05, ge=0.0, le=1.0)
@@ -132,6 +140,10 @@ class PredictionResolutionRequest(BaseModel):
     trigger_reprediction: bool = False
 
 
+class ClearAllDataRequest(BaseModel):
+    confirmation: str = Field(..., min_length=1)
+
+
 def _error(code: str, message: str, *, details: Any | None = None, http_status: int = 400) -> JSONResponse:
     return JSONResponse(status_code=http_status, content={"error": {"code": code, "message": message, "details": details}})
 
@@ -169,7 +181,7 @@ def _gui_endpoint_contract() -> dict[str, Any]:
             "graph": ["GET /graph/nodes", "POST /graph/nodes", "PATCH /graph/nodes/{node_id}", "GET /graph/edges", "POST /graph/edges", "PATCH /graph/edges/{edge_id}", "GET /graph/neighborhood/{node_id}", "POST /graph/merge-proposals/{proposal_id}/approve", "POST /graph/merge-proposals/{proposal_id}/reject"],
             "runs": ["GET /runs", "GET /runs/{run_id}", "GET /runs/{run_id}/messages", "GET /runs/{run_id}/related", "POST /runs/{run_id}/retry", "GET /ops/jobs/{job_id}"],
             "calibration": ["GET /calibration/summary", "GET /analytics/charts", "GET /feedback-entries", "GET /outcome-checks", "POST /predictions/{prediction_id}/resolve", "POST /scenarios/{scenario_id}/run-feedback"],
-            "settings": ["GET /config/status", "GET /config/models", "PATCH /config/models", "GET /config/gui-endpoints"],
+            "settings": ["GET /config/status", "GET /config/models", "PATCH /config/models", "GET /config/gui-endpoints", "DELETE /ops/data"],
         },
         "mutations": {
             "scenario_report_export": "GET /scenarios/{scenario_id}/report",
@@ -179,6 +191,7 @@ def _gui_endpoint_contract() -> dict[str, Any]:
             "chart_aggregations": "GET /analytics/charts",
             "related_records": ["GET /kb/entries/{entry_id}/related", "GET /runs/{run_id}/related"],
             "job_polling": ["GET /ops/jobs", "GET /ops/jobs/{job_id}"],
+            "clear_all_data": "DELETE /ops/data",
         },
     }
 
@@ -192,7 +205,14 @@ def create_app(
 ) -> FastAPI:
     """Create the Seldon FastAPI app with overrideable dependencies for tests/hosts."""
     app_config = config or SeldonConfig()
-    configure_structured_logging(json_logs=app_config.ops.structured_logs, level=app_config.ops.log_level)
+    log_file = app_config.ops.log_file or (app_config.data_dir / "logs" / "seldon.log")
+    configure_structured_logging(
+        json_logs=app_config.ops.structured_logs,
+        level=app_config.ops.log_level,
+        log_file=log_file,
+        max_bytes=app_config.ops.log_max_bytes,
+        backup_count=app_config.ops.log_backup_count,
+    )
     engine: Engine | None = None
     if session_factory is None:
         engine = make_engine(app_config.database.url, sqlite_path=app_config.database.sqlite_path, echo=app_config.database.echo)
@@ -201,7 +221,7 @@ def create_app(
     else:
         bind = session_factory.kw.get("bind")
         engine = bind if isinstance(bind, Engine) else None
-    app_llm_client = llm_client or OpenRouterClient(app_config.llm)
+    app_llm_client = llm_client or build_llm_client(app_config)
     app_job_queue = job_queue or InProcessJobQueue(session_factory=session_factory)
 
     def get_config_dep() -> SeldonConfig:
@@ -239,35 +259,62 @@ def create_app(
             raise ValueError("phase jobs require scenario_id and phase")
         session = session_factory()
         try:
-            with session.begin():
-                scenario = session.get(Scenario, scenario_id)
-                if scenario is None:
-                    raise KeyError(f"scenario not found: {scenario_id}")
-                if phase == "context_gathering":
-                    request = ContextGatheringRequest(**payload.get("request", {}))
-                    agent_input = ContextGatheringCoordinator.input_from_scenario(scenario, depth=request.depth, source_policy=request.source_policy, max_subqueries=request.max_subqueries, external_documents=request.external_documents)
-                    run_id, output = ContextGatheringCoordinator(session, config=app_config, llm_client=app_llm_client).run(agent_input)
-                elif phase == "extraction":
-                    request = ExtractionRequest(**payload.get("request", {}))
-                    agent_input = ExtractionCoordinator.input_from_scenario(scenario, max_kb_entries=request.max_kb_entries, max_nodes=request.max_nodes)
-                    run_id, output = ExtractionCoordinator(session, config=app_config, llm_client=app_llm_client).run(agent_input)
-                elif phase == "graph_construction":
-                    request = GraphConstructionRequest(**payload.get("request", {}))
-                    if request.run_convergence_loop:
-                        agent_input = ConvergenceLoopInput(scenario_id=scenario_id, max_iterations=request.max_iterations, min_new_info_threshold=request.min_new_info_threshold, coverage_target=request.coverage_target, max_candidate_pairs=request.max_candidate_pairs)
-                        run_id, output = ConvergenceLoopCoordinator(session, config=app_config, llm_client=app_llm_client).run(agent_input)
-                    else:
-                        agent_input = GraphConstructionCoordinator.input_from_scenario(scenario, max_candidate_pairs=request.max_candidate_pairs, min_confidence_to_write=request.min_confidence_to_write)
-                        run_id, output = GraphConstructionCoordinator(session, config=app_config, llm_client=app_llm_client).run(agent_input)
-                elif phase == "prediction":
-                    request = PredictionRequest(**payload.get("request", {}))
-                    agent_input = PredictionCoordinator.input_from_scenario(scenario, max_driver_nodes=request.max_driver_nodes, min_confidence_to_activate=request.min_confidence_to_activate, export_markdown=request.export_markdown)
-                    run_id, output = PredictionCoordinator(session, config=app_config, llm_client=app_llm_client).run(agent_input)
+            scenario = session.get(Scenario, scenario_id)
+            if scenario is None:
+                raise KeyError(f"scenario not found: {scenario_id}")
+            if phase == "context_gathering":
+                request = ContextGatheringRequest(**payload.get("request", {}))
+                agent_input = ContextGatheringCoordinator.input_from_scenario(scenario, depth=request.depth, source_policy=request.source_policy, max_subqueries=request.max_subqueries, external_documents=request.external_documents)
+                run_id, output = ContextGatheringCoordinator(
+                    session,
+                    config=app_config,
+                    llm_client=app_llm_client,
+                    external_retrieval_providers=build_providers_from_config(app_config.retrieval),
+                ).run(agent_input)
+            elif phase == "extraction":
+                request = ExtractionRequest(**payload.get("request", {}))
+                agent_input = ExtractionCoordinator.input_from_scenario(scenario, max_kb_entries=request.max_kb_entries, max_nodes=request.max_nodes)
+                run_id, output = ExtractionCoordinator(session, config=app_config, llm_client=app_llm_client).run(agent_input)
+            elif phase == "graph_construction":
+                request = GraphConstructionRequest(**payload.get("request", {}))
+                if request.run_convergence_loop:
+                    agent_input = ConvergenceLoopInput(scenario_id=scenario_id, max_iterations=request.max_iterations, min_new_info_threshold=request.min_new_info_threshold, coverage_target=request.coverage_target, max_candidate_pairs=request.max_candidate_pairs)
+                    run_id, output = ConvergenceLoopCoordinator(
+                        session,
+                        config=app_config,
+                        llm_client=app_llm_client,
+                        external_retrieval_providers=build_providers_from_config(app_config.retrieval),
+                    ).run(agent_input)
                 else:
-                    raise ValueError(f"unsupported phase job: {phase}")
-                return {"agent_run_id": run_id, "phase": phase, "output": output.model_dump(mode="json")}
+                    agent_input = GraphConstructionCoordinator.input_from_scenario(scenario, max_candidate_pairs=request.max_candidate_pairs, min_confidence_to_write=request.min_confidence_to_write)
+                    run_id, output = GraphConstructionCoordinator(session, config=app_config, llm_client=app_llm_client).run(agent_input)
+            elif phase == "prediction":
+                request = PredictionRequest(**payload.get("request", {}))
+                agent_input = PredictionCoordinator.input_from_scenario(scenario, max_driver_nodes=request.max_driver_nodes, min_confidence_to_activate=request.min_confidence_to_activate, export_markdown=request.export_markdown)
+                run_id, output = PredictionCoordinator(session, config=app_config, llm_client=app_llm_client).run(agent_input)
+            else:
+                raise ValueError(f"unsupported phase job: {phase}")
+            result = {"agent_run_id": run_id, "phase": phase, "output": output.model_dump(mode="json")}
+            session.commit()
+        except Exception:
+            session.rollback()
+            raise
         finally:
             session.close()
+        if payload.get("auto_chain"):
+            next_phase = {
+                "context_gathering": "extraction",
+                "extraction": "graph_construction",
+                "graph_construction": "prediction",
+            }.get(phase)
+            if next_phase:
+                next_job = app_job_queue.enqueue(
+                    "phase",
+                    {"scenario_id": scenario_id, "phase": next_phase, "request": {}, "auto_chain": True, "triggered_by_phase": phase, "previous_agent_run_id": run_id},
+                    idempotency_key=f"scenario:{scenario_id}:auto:{next_phase}",
+                )
+                result["next_job"] = next_job.to_dict()
+        return result
 
     app_job_queue.register("backup", backup_job)
     app_job_queue.register("seed_demo", seed_job)
@@ -276,6 +323,35 @@ def create_app(
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         app_job_queue.start()
+        # Boot-time model health check — log dead/misconfigured OpenRouter model IDs
+        # so operators see them in `docker logs seldon-api-1` instead of discovering
+        # mid-pipeline that all candidates 404. Skipped under tests (conftest sets
+        # SELDON_SKIP_LLM_HEALTHCHECK=1) so the suite doesn't burn rate limits.
+        _llm_cfg = app_llm_client.config
+        _llm_key_present = bool(app_llm_client.api_key or os.getenv(_llm_cfg.api_key_env))
+        logger.info(
+            "llm_provider_active",
+            extra={"event": "llm_provider_active", "provider": _llm_cfg.provider, "base_url": _llm_cfg.base_url, "api_key_env": _llm_cfg.api_key_env, "api_key_configured": _llm_key_present, "default_model": _llm_cfg.default_model},
+        )
+        if not _llm_key_present:
+            # The single most common failure mode: key not in the process env (no
+            # .env loaded). Without it every LLM call 401s and the queue pauses.
+            logger.error(
+                "llm_api_key_missing",
+                extra={"event": "llm_api_key_missing", "provider": _llm_cfg.provider, "api_key_env": _llm_cfg.api_key_env, "hint": f"set {_llm_cfg.api_key_env} (see .env / .env.example); LLM phases will 401 and the job queue will pause"},
+            )
+        if os.getenv("SELDON_SKIP_LLM_HEALTHCHECK", "").lower() not in {"1", "true", "yes", "on"}:
+            try:
+                health = app_llm_client.healthcheck(timeout=10.0)
+                for model, info in health.items():
+                    if info.get("ok"):
+                        logger.info("llm_model_healthy", extra={"event": "llm_model_healthy", "provider": _llm_cfg.provider, "model": model, "latency_ms": info.get("latency_ms")})
+                    else:
+                        logger.warning("llm_model_unhealthy", extra={"event": "llm_model_unhealthy", "provider": _llm_cfg.provider, "model": model, "reason": info.get("reason"), "latency_ms": info.get("latency_ms")})
+                if not any(info.get("ok") for info in health.values()):
+                    logger.error("llm_no_models_healthy", extra={"event": "llm_no_models_healthy", "provider": _llm_cfg.provider, "models": list(health.keys())})
+            except Exception as exc:  # never block startup on healthcheck transport errors
+                logger.warning("llm_healthcheck_skipped", extra={"event": "llm_healthcheck_skipped", "error": str(exc)})
         try:
             yield
         finally:
@@ -338,7 +414,24 @@ def create_app(
     @app.get("/health")
     def health(db: Session = Depends(get_session_dep), llm: OpenRouterClient = Depends(get_llm_dep)) -> dict[str, Any]:
         db.execute(select(1)).scalar_one()
-        return {"ok": True, "service": "seldon-api", "llm_default_model": llm.config.default_model}
+        return {"ok": True, "service": "seldon-api", "llm_provider": llm.config.provider, "llm_default_model": llm.config.default_model}
+
+    @app.get("/health/llm")
+    def health_llm(llm: OpenRouterClient = Depends(get_llm_dep)) -> dict[str, Any]:
+        """Ping each configured model for the active provider. Surfaces dead/misconfigured model IDs."""
+        results = llm.healthcheck()
+        any_ok = any(entry.get("ok") for entry in results.values())
+        return {
+            "ok": any_ok,
+            "provider": llm.config.provider,
+            "base_url": llm.config.base_url,
+            "api_key_configured": bool(llm.api_key or os.getenv(llm.config.api_key_env)),
+            "default_model": llm.config.default_model,
+            "fast_model": llm.config.fast_model,
+            "reasoning_model": llm.config.reasoning_model,
+            "fallback_models": list(llm.config.fallback_models),
+            "models": results,
+        }
 
     @app.get("/ops/metrics")
     def ops_metrics(db: Session = Depends(get_session_dep)) -> dict[str, Any]:
@@ -373,7 +466,8 @@ def create_app(
             "source_configuration": {"configured_sources": "database", "sources_endpoint": "/sources", "runtime_editable": False},
             "persistence_backend": {"kind": "sqlite" if sqlite_path else "external", "url_configured": bool(cfg.database.url), "sqlite_path": str(sqlite_path) if sqlite_path else None, "sqlite_exists": sqlite_path.exists() if sqlite_path else None, "runtime_editable": False},
             "vector_backend": {"kind": "local_hash", "index_path": str(vector_path), "index_path_exists": vector_path.exists(), "runtime_editable": False},
-            "auth": {"api_key_required": cfg.ops.require_api_key, "api_key_env": cfg.ops.api_key_env, "api_key_configured": bool(os.getenv(cfg.ops.api_key_env)), "openrouter_api_key_env": cfg.llm.api_key_env, "openrouter_api_key_configured": bool(os.getenv(cfg.llm.api_key_env)), "secrets_exposed": False},
+            "logging": {"structured_logs": cfg.ops.structured_logs, "level": cfg.ops.log_level, "log_file": str(cfg.ops.log_file or (cfg.data_dir / "logs" / "seldon.log")), "max_bytes": cfg.ops.log_max_bytes, "backup_count": cfg.ops.log_backup_count},
+            "auth": {"api_key_required": cfg.ops.require_api_key, "api_key_env": cfg.ops.api_key_env, "api_key_configured": bool(os.getenv(cfg.ops.api_key_env)), "llm_provider": cfg.llm.provider, "llm_base_url": cfg.llm.base_url, "llm_api_key_env": cfg.llm.api_key_env, "llm_api_key_configured": bool(os.getenv(cfg.llm.api_key_env)), "openrouter_api_key_env": cfg.llm.api_key_env, "openrouter_api_key_configured": bool(os.getenv(cfg.llm.api_key_env)), "secrets_exposed": False},
             "runtime_editable": ["profiles.fast", "profiles.balanced", "profiles.reasoning", "profiles.embedding", "fallback_models", "agents.*.model_profile", "agents.*.model", "agents.*.temperature", "agents.*.max_tokens"],
             "deploy_time": ["database", "vector_backend", "auth secrets", "source connectors"],
         }
@@ -459,6 +553,25 @@ def create_app(
                     agent_cfg.max_tokens = token_int
         return model_config(cfg)
 
+    @app.delete("/ops/data")
+    def clear_all_data(payload: ClearAllDataRequest, db: Session = Depends(get_session_dep), cfg: SeldonConfig = Depends(get_config_dep)) -> dict[str, Any]:
+        if payload.confirmation != "CLEAR ALL DATA":
+            raise HTTPException(status_code=422, detail={"code": "validation_error", "message": "confirmation must equal CLEAR ALL DATA"})
+        deleted: dict[str, int] = {}
+        with db.begin():
+            for table in reversed(Base.metadata.sorted_tables):
+                deleted[table.name] = int(db.execute(select(func.count()).select_from(table)).scalar_one())
+                db.execute(table.delete())
+        vector_index_cleared = False
+        vector_path = cfg.ops.vector_index_path
+        if vector_path.exists():
+            if vector_path.is_dir():
+                shutil.rmtree(vector_path)
+            else:
+                vector_path.unlink()
+            vector_index_cleared = True
+        return {"cleared": True, "deleted": deleted, "vector_index_cleared": vector_index_cleared}
+
     @app.post("/sources", status_code=201)
     def create_source(payload: SourceCreate, db: Session = Depends(get_session_dep)) -> dict[str, Any]:
         values = _values(payload)
@@ -492,7 +605,101 @@ def create_app(
     def create_scenario(payload: ScenarioCreate, db: Session = Depends(get_session_dep)) -> dict[str, Any]:
         with db.begin():
             row = ScenarioRepository(db).create_scenario(**_values(payload))
-        return _row(row)
+            scenario = _row(row)
+        job = app_job_queue.enqueue(
+            "phase",
+            {"scenario_id": scenario["id"], "phase": "context_gathering", "request": {}, "auto_chain": True, "triggered_by": "scenario_create"},
+            idempotency_key=f"scenario:{scenario['id']}:auto:context_gathering",
+        )
+        scenario["workflow_job_id"] = job.id
+        return scenario
+
+    def _fallback_scenario_name(cleaned: str) -> str:
+        text = re.sub(r"^(i\s+want\s+to\s+(know|understand|forecast|explore)\s+|tell\s+me\s+|what\s+(would|will|does)\s+)", "", cleaned, flags=re.I).strip()
+        text = re.sub(r"\bwould\s+look\s+like\b", "look like", text, flags=re.I)
+        horizon_matches = re.findall(r"\b(?:in\s+)?(\d+\s*(?:months?|years?)|a\s+year)\b", cleaned, flags=re.I)
+        horizons = []
+        for match in horizon_matches:
+            normalized = "12 months" if match.lower() == "a year" else re.sub(r"\s+", " ", match.lower())
+            if normalized not in horizons:
+                horizons.append(normalized)
+        price_match = re.search(r"\bprice\s+of\s+([a-zA-Z][a-zA-Z\s-]{1,60}?)(?:\s+(?:would|will|could|in\b|over\b|after\b)|$)", cleaned, flags=re.I)
+        if price_match:
+            asset = re.sub(r"\s+", " ", price_match.group(1)).strip(" .?!").title()
+            horizon_text = " and ".join(horizons) if horizons else "the target horizon"
+            return f"{asset} price outlook over {horizon_text}"
+        text = re.sub(r"\b(in|over)\s+\d+\s*(months?|years?)\b", "", text, flags=re.I)
+        text = re.sub(r"\bin\s+a\s+year\b", "", text, flags=re.I)
+        text = re.sub(r"[^\w\s-]", "", text).strip()
+        words = text.split()
+        name = " ".join(words[:10]) if words else "New scenario"
+        return name[:117] + "..." if len(name) > 120 else name
+
+    def _fallback_scope_notes(cleaned: str, name: str, default_horizon: str) -> str:
+        price_match = re.search(r"\bprice\s+of\s+([a-zA-Z][a-zA-Z\s-]{1,60}?)(?:\s+(?:would|will|could|in\b|over\b|after\b)|$)", cleaned, flags=re.I)
+        if price_match:
+            asset = re.sub(r"\s+", " ", price_match.group(1)).strip(" .?!").title()
+            return (
+                f"Explore the outlook for {asset} prices across the requested horizons ({default_horizon}). "
+                "Start by establishing the current spot price and recent trend, then investigate macro drivers such as real yields, "
+                "Federal Reserve policy expectations, inflation, USD strength, central-bank and ETF demand, jewellery/industrial demand, "
+                "geopolitical safe-haven flows, positioning, and technical support/resistance levels. Compare plausible bull/base/bear paths "
+                "for the 6-month and 12-month horizons, and note the key indicators that would confirm or invalidate each path."
+            )
+        return (
+            f"Explore the scenario '{name}' over the requested horizon ({default_horizon}). Start by clarifying the current baseline, "
+            "the most important entities and metrics, relevant historical context, key drivers, constraints, downside/upside cases, "
+            "and concrete signals that would help resolve or update the forecast in later phases."
+        )
+
+    def _fallback_scenario_draft(prompt: str, default_horizon: str) -> ScenarioDraftResponse:
+        cleaned = " ".join(prompt.split()).strip()
+        name = _fallback_scenario_name(cleaned)
+        target_question = cleaned if cleaned.endswith("?") else f"What is the likely outcome for: {cleaned}?"
+        return ScenarioDraftResponse(
+            name=name,
+            target_question=target_question,
+            time_horizon=default_horizon,
+            description=_fallback_scope_notes(cleaned, name, default_horizon),
+            source_prompt=prompt,
+        )
+
+    @app.post("/scenarios/draft")
+    def draft_scenario(payload: ScenarioDraftRequest, llm: OpenRouterClient = Depends(get_llm_dep)) -> dict[str, Any]:
+        system_prompt = (
+            "You turn a user's natural-language forecasting request into useful Seldon scenario metadata. "
+            "Do not answer the forecast. Return only JSON with: name, target_question, time_horizon, description. "
+            "The name should be a short summary of the question/scenario defined: a noun phrase under 10 words, not first-person, not a copied/truncated user prompt, and not a title with extra flourish. "
+            "For example, 'I want to know what the price of gold looks like in 6 months and a year' should become 'Gold price outlook over 6 and 12 months'. "
+            "The target_question should be a clear forecast question. "
+            "The description should be scope notes that add enough context to start exploration in later phases: "
+            "include the relevant background, key drivers to investigate, important entities/metrics, plausible constraints, "
+            "known exclusions, and resolution notes if implied. Keep it concise but richer than a restatement of the prompt. "
+            "If the user does not provide a time horizon, use the default horizon exactly as provided."
+        )
+        default_horizon = payload.default_time_horizon or "6 months / 1 year"
+        user_prompt = {
+            "request": payload.prompt,
+            "default_time_horizon": default_horizon,
+        }
+        try:
+            drafted = llm.complete_json(
+                [{"role": "user", "content": json.dumps(user_prompt)}],
+                system=system_prompt,
+                model_profile="fast",
+                temperature=0.1,
+                max_tokens=500,
+            )
+            response = ScenarioDraftResponse(**{**drafted, "source_prompt": payload.prompt})
+            if not response.time_horizon.strip():
+                response.time_horizon = default_horizon
+        except ValidationError:
+            logger.warning("scenario draft LLM returned invalid payload; using fallback draft")
+            response = _fallback_scenario_draft(payload.prompt, default_horizon)
+        except Exception as exc:
+            logger.warning("scenario draft LLM failed; using fallback draft: %s", exc)
+            response = _fallback_scenario_draft(payload.prompt, default_horizon)
+        return response.model_dump(mode="json")
 
     @app.get("/scenarios")
     def list_scenarios(
@@ -509,6 +716,51 @@ def create_app(
         if status_filter:
             stmt = stmt.where(Scenario.status == status_filter)
         return _rows(list(db.scalars(stmt.offset(offset).limit(limit))))
+
+
+    @app.delete("/scenarios/{scenario_id}")
+    def delete_scenario(scenario_id: str, db: Session = Depends(get_session_dep)) -> dict[str, Any]:
+        with db.begin():
+            scenario = db.get(Scenario, scenario_id)
+            if scenario is None:
+                raise not_found("scenario", scenario_id)
+            before = row_to_dict(scenario)
+            predictions = list(db.scalars(select(ScenarioPrediction).where(ScenarioPrediction.scenario_id == scenario_id)))
+            prediction_ids = [prediction.id for prediction in predictions]
+            if prediction_ids:
+                for row in db.scalars(select(ScenarioEvidenceLink).where(ScenarioEvidenceLink.scenario_prediction_id.in_(prediction_ids))):
+                    db.delete(row)
+                for row in db.scalars(select(ScenarioVersion).where(ScenarioVersion.scenario_prediction_id.in_(prediction_ids))):
+                    db.delete(row)
+                for row in db.scalars(select(FeedbackEntry).where(FeedbackEntry.prediction_id.in_(prediction_ids))):
+                    db.delete(row)
+                for row in db.scalars(select(OutcomeCheck).where(OutcomeCheck.prediction_id.in_(prediction_ids))):
+                    db.delete(row)
+                for row in db.scalars(select(HistoricalAnalogy).where(HistoricalAnalogy.prediction_id.in_(prediction_ids))):
+                    db.delete(row)
+                for row in db.scalars(select(BaseRateEvidence).where(BaseRateEvidence.prediction_id.in_(prediction_ids))):
+                    db.delete(row)
+                for row in db.scalars(select(AssumptionRecord).where(AssumptionRecord.prediction_id.in_(prediction_ids))):
+                    db.delete(row)
+                for row in db.scalars(select(AdvancedAnalysis).where(AdvancedAnalysis.prediction_id.in_(prediction_ids))):
+                    db.delete(row)
+                for prediction in predictions:
+                    db.delete(prediction)
+            for model in (GraphSnapshot, FeedbackEntry, OutcomeCheck, HistoricalAnalogy, BaseRateEvidence, SentimentDrift, AssumptionRecord, AdvancedAnalysis):
+                for row in db.scalars(select(model).where(model.scenario_id == scenario_id)):
+                    db.delete(row)
+            for row in db.scalars(select(KBEntry)):
+                if scenario_id in (row.scenario_ids or []):
+                    row.scenario_ids = [item for item in row.scenario_ids if item != scenario_id]
+            for row in db.scalars(select(ERGNode)):
+                if scenario_id in (row.scenario_ids or []):
+                    row.scenario_ids = [item for item in row.scenario_ids if item != scenario_id]
+            for row in db.scalars(select(ERGEdge)):
+                if scenario_id in (row.scenario_ids or []):
+                    row.scenario_ids = [item for item in row.scenario_ids if item != scenario_id]
+            db.delete(scenario)
+            ScenarioRepository(db).audit.emit("scenario", scenario_id, "delete", before=before)
+        return {"deleted": True, "scenario_id": scenario_id}
 
     @app.get("/scenarios/{scenario_id}")
     def get_scenario(scenario_id: str, db: Session = Depends(get_session_dep)) -> dict[str, Any]:
@@ -551,7 +803,6 @@ def create_app(
             "",
             f"Question: {scenario.target_question}",
             f"Horizon: {scenario.time_horizon or 'not set'}",
-            f"Status: {scenario.status}",
         ]
         if scenario.description:
             lines.extend(["", "## Description", scenario.description])
@@ -628,7 +879,12 @@ def create_app(
                 max_subqueries=request.max_subqueries,
                 external_documents=request.external_documents,
             )
-            run_id, output = ContextGatheringCoordinator(db, config=cfg, llm_client=llm).run(agent_input)
+            run_id, output = ContextGatheringCoordinator(
+                db,
+                config=cfg,
+                llm_client=llm,
+                external_retrieval_providers=build_providers_from_config(cfg.retrieval),
+            ).run(agent_input)
             row = db.get(AgentRun, run_id)
         assert row is not None
         data = _row(row)
@@ -677,7 +933,12 @@ def create_app(
                     coverage_target=request.coverage_target,
                     max_candidate_pairs=request.max_candidate_pairs,
                 )
-                run_id, output = ConvergenceLoopCoordinator(db, config=cfg, llm_client=llm).run(agent_input)
+                run_id, output = ConvergenceLoopCoordinator(
+                    db,
+                    config=cfg,
+                    llm_client=llm,
+                    external_retrieval_providers=build_providers_from_config(cfg.retrieval),
+                ).run(agent_input)
                 row = db.get(AgentRun, run_id)
                 assert row is not None
                 data = _row(row)
@@ -1603,6 +1864,21 @@ def create_app(
     def enqueue_seed_demo() -> dict[str, Any]:
         job = app_job_queue.enqueue("seed_demo", {})
         return job.to_dict()
+
+    @app.get("/ops/queue")
+    def queue_status() -> dict[str, Any]:
+        return app_job_queue.status()
+
+    @app.post("/ops/queue/pause")
+    def queue_pause(payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        reason = (payload or {}).get("reason") or "manual_pause"
+        app_job_queue.pause(str(reason))
+        return app_job_queue.status()
+
+    @app.post("/ops/queue/resume")
+    def queue_resume() -> dict[str, Any]:
+        app_job_queue.resume()
+        return app_job_queue.status()
 
     return app
 

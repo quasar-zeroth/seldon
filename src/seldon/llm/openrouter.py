@@ -26,6 +26,32 @@ class LLMResponseError(RuntimeError):
     """Raised when an LLM response cannot be parsed or validated."""
 
 
+class LLMAuthenticationError(RuntimeError):
+    """Raised when the LLM provider rejects credentials (401/403).
+
+    Caller should not retry other models — auth failures are account-wide.
+    Job queue catches this and pauses processing for operator attention.
+    """
+
+    def __init__(self, message: str, *, status_code: int | None = None, model: str | None = None):
+        super().__init__(message)
+        self.status_code = status_code
+        self.model = model
+
+
+class LLMModelUnavailableError(RuntimeError):
+    """Raised when the specific model is unavailable (404).
+
+    Caller can advance to the next fallback model — the auth credentials are fine,
+    just the model ID is wrong/retired.
+    """
+
+    def __init__(self, message: str, *, status_code: int | None = None, model: str | None = None):
+        super().__init__(message)
+        self.status_code = status_code
+        self.model = model
+
+
 @dataclass(frozen=True)
 class OpenRouterResponse:
     payload: dict[str, Any]
@@ -131,11 +157,16 @@ class OpenRouterClient:
 
     def _headers(self) -> dict[str, str]:
         key = self.api_key or os.getenv(self.config.api_key_env)
-        headers = {"Content-Type": "application/json", "X-Title": self.config.app_name}
+        headers = {"Content-Type": "application/json"}
+        # X-Title / HTTP-Referer are OpenRouter attribution headers; NIM ignores
+        # them. Only send when configured so other providers get a clean request.
+        if self.config.app_name:
+            headers["X-Title"] = self.config.app_name
         if key:
             headers["Authorization"] = f"Bearer {key}"
         if self.config.site_url:
             headers["HTTP-Referer"] = self.config.site_url
+        headers.update(getattr(self.config, "extra_headers", {}) or {})
         return headers
 
     def _payload(
@@ -190,9 +221,12 @@ class OpenRouterClient:
         for model in self.candidate_models(model=kwargs.get("model"), model_profile=kwargs.get("model_profile")):
             try:
                 return self._complete_once(model, messages, system, kwargs)
-            except Exception as exc:  # try fallback models on transport/status/parse/validation failures
+            except LLMAuthenticationError:
+                # Auth failures are account-wide; do not try other models.
+                raise
+            except Exception as exc:  # try fallback models on model-unavailable/transport/parse/validation failures
                 last_error = exc
-        raise LLMResponseError(f"All OpenRouter model candidates failed: {last_error}") from last_error
+        raise LLMResponseError(f"All {self.config.provider} model candidates failed: {last_error}") from last_error
 
     def _retry_delay(self, response: httpx.Response | None, attempt: int) -> float:
         if response is not None and response.headers.get("Retry-After"):
@@ -206,6 +240,34 @@ class OpenRouterClient:
         if isinstance(exc, (httpx.TimeoutException, httpx.NetworkError)):
             return True
         return response is not None and response.status_code in {429, 500, 502, 503, 504}
+
+    def _translate_http_error(self, exc: httpx.HTTPStatusError, model: str) -> Exception:
+        """Convert provider HTTP errors into typed Seldon exceptions.
+
+        401/403 → LLMAuthenticationError (caller must stop, not try fallbacks).
+        404 → LLMModelUnavailableError (caller advances to next fallback).
+        Others bubble up unchanged.
+        """
+        status = exc.response.status_code if exc.response is not None else None
+        body_excerpt = ""
+        if exc.response is not None:
+            try:
+                body_excerpt = exc.response.text[:300]
+            except Exception:
+                body_excerpt = ""
+        if status in (401, 403):
+            return LLMAuthenticationError(
+                f"{self.config.provider} auth failed for model {model} (HTTP {status}): {body_excerpt}",
+                status_code=status,
+                model=model,
+            )
+        if status == 404:
+            return LLMModelUnavailableError(
+                f"{self.config.provider} model {model} not found (HTTP 404): {body_excerpt}",
+                status_code=status,
+                model=model,
+            )
+        return exc
 
     async def _async_sleep(self, seconds: float) -> None:
         await asyncio.sleep(seconds)
@@ -242,6 +304,8 @@ class OpenRouterClient:
                     if self._should_retry(response, exc) and attempt < max_retries:
                         time.sleep(self._retry_delay(response, attempt))
                         continue
+                    if isinstance(retry_exc, httpx.HTTPStatusError):
+                        raise self._translate_http_error(retry_exc, model) from retry_exc
                     raise
         except Exception as exc:
             error = str(exc)
@@ -260,9 +324,12 @@ class OpenRouterClient:
         for model in self.candidate_models(model=kwargs.get("model"), model_profile=kwargs.get("model_profile")):
             try:
                 return await self._acomplete_once(model, messages, system, kwargs)
+            except LLMAuthenticationError:
+                # Auth failures are account-wide; do not try other models.
+                raise
             except Exception as exc:
                 last_error = exc
-        raise LLMResponseError(f"All OpenRouter model candidates failed: {last_error}") from last_error
+        raise LLMResponseError(f"All {self.config.provider} model candidates failed: {last_error}") from last_error
 
     async def _acomplete_once(self, model: str, messages: list[dict], system: str | None, kwargs: dict[str, Any]) -> OpenRouterResponse:
         started = time.perf_counter()
@@ -293,6 +360,8 @@ class OpenRouterClient:
                     if self._should_retry(response, exc) and attempt < max_retries:
                         await self._async_sleep(self._retry_delay(response, attempt))
                         continue
+                    if isinstance(exc, httpx.HTTPStatusError):
+                        raise self._translate_http_error(exc, model) from exc
                     raise
         except Exception as exc:
             self.recorder.record({**self._metadata(raw, model, started, error=str(exc)), "agent": kwargs.get("agent"), "agent_run_id": kwargs.get("agent_run_id"), "repair_attempt": kwargs.get("repair_attempt"), "escalated_from": kwargs.get("escalated_from"), "ok": False})
@@ -317,6 +386,45 @@ class OpenRouterClient:
             return _validate_payload(payload, schema)
         except ValidationError as exc:
             raise LLMResponseError(f"OpenRouter JSON failed schema validation: {exc}") from exc
+
+    def healthcheck(self, *, models: list[str] | None = None, timeout: float = 15.0) -> dict[str, dict[str, Any]]:
+        """Ping each configured model with a tiny prompt to verify availability.
+
+        Returns mapping of model id → {"ok": bool, "reason": str | None, "latency_ms": float | None}.
+        Used at startup and at /health to surface dead/misconfigured model IDs before they
+        silently corrupt a pipeline run.
+        """
+        targets = models if models is not None else self.candidate_models()
+        results: dict[str, dict[str, Any]] = {}
+        ping_payload_messages = [{"role": "user", "content": "ping"}]
+        client = self._client or httpx.Client(timeout=timeout)
+        close_client = self._client is None
+        try:
+            for model in targets:
+                started = time.perf_counter()
+                payload = {"model": model, "messages": ping_payload_messages, "max_tokens": 1}
+                try:
+                    response = client.post(
+                        f"{self.config.base_url.rstrip('/')}/chat/completions",
+                        headers=self._headers(),
+                        json=payload,
+                    )
+                    latency = round((time.perf_counter() - started) * 1000, 1)
+                    if response.status_code in (401, 403):
+                        results[model] = {"ok": False, "reason": f"auth_failed_http_{response.status_code}", "latency_ms": latency}
+                    elif response.status_code == 404:
+                        results[model] = {"ok": False, "reason": "model_not_found_http_404", "latency_ms": latency}
+                    elif response.status_code >= 400:
+                        results[model] = {"ok": False, "reason": f"http_{response.status_code}", "latency_ms": latency}
+                    else:
+                        results[model] = {"ok": True, "reason": None, "latency_ms": latency}
+                except Exception as exc:
+                    latency = round((time.perf_counter() - started) * 1000, 1)
+                    results[model] = {"ok": False, "reason": f"transport_error: {exc.__class__.__name__}", "latency_ms": latency}
+        finally:
+            if close_client:
+                client.close()
+        return results
 
     def _metadata(self, raw: dict[str, Any], model: str, started: float, error: str | None) -> dict[str, Any]:
         return {

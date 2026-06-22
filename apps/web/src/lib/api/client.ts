@@ -13,7 +13,7 @@ export async function getJson<T>(path: string): Promise<T> {
   return response.json() as Promise<T>;
 }
 
-export async function sendJson<T>(method: "POST" | "PATCH", path: string, body: Record<string, unknown> = {}): Promise<T> {
+export async function sendJson<T>(method: "POST" | "PATCH" | "DELETE", path: string, body: Record<string, unknown> = {}): Promise<T> {
   const response = await fetch(`${API_BASE}${path}`, {
     method,
     headers: { "content-type": "application/json", ...authHeaders() },

@@ -106,8 +106,11 @@ export function createMockApiServer() {
       if (path === "/config/models" && req.method === "GET") return json(res, 200, modelConfig);
       if (path === "/config/models" && req.method === "PATCH") return json(res, 200, { ...modelConfig, ...(await readJson(req)) });
       if (path === "/scenarios" && req.method === "GET") return json(res, 200, [scenario]);
+      if (path === "/scenarios/draft" && req.method === "POST") return json(res, 200, { name: "Created in browser", target_question: "Will the browser workflow persist?", time_horizon: "6 months", description: "Browser-created scenario draft.", source_prompt: (await readJson(req)).prompt });
       if (path === "/scenarios" && req.method === "POST") return json(res, 201, { ...scenario, ...(await readJson(req)), id: "scenario-created", created_at: now(), updated_at: now() });
+      if (path === "/scenarios/scenario-1" && req.method === "DELETE") return json(res, 200, { deleted: true, scenario_id: "scenario-1" });
       if (path === "/scenarios/scenario-1") return json(res, req.method === "PATCH" ? 200 : 200, req.method === "PATCH" ? { ...scenario, ...(await readJson(req)), updated_at: now() } : scenario);
+      if (path === "/scenarios/scenario-created" && req.method === "DELETE") return json(res, 200, { deleted: true, scenario_id: "scenario-created" });
       if (path === "/scenarios/scenario-created") return json(res, 200, { ...scenario, id: "scenario-created", name: "Created in browser" });
       if (path === "/scenarios/scenario-1/report") return text(res, 200, "# Gold outlook\n\nGold base case remains constructive.\n");
       if (path === "/scenarios/scenario-1/jobs/context_gathering" || path.startsWith("/scenarios/scenario-1/jobs/")) return json(res, 202, { ...job, id: `job-${randomUUID()}`, status: "queued" });

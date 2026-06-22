@@ -2,9 +2,10 @@ import { expect, test } from "@playwright/test";
 
 test("scenario creation redirects to persisted detail page", async ({ page }) => {
   await page.goto("/scenarios");
-  await page.getByPlaceholder("Scenario name").fill("Created in browser");
-  await page.getByRole("textbox", { name: "Target question", exact: true }).fill("Will the browser workflow persist?");
-  await page.getByRole("button", { name: "Create and open" }).click();
+  await page.getByPlaceholder(/I want to understand/).fill("I want to forecast whether the browser workflow persists over the next six months.");
+  await page.getByRole("button", { name: "Draft scenario" }).click();
+  await expect(page.getByLabel("Draft scenario fields")).toBeVisible();
+  await page.getByRole("button", { name: "Create scenario" }).click();
   await expect(page).toHaveURL(/\/scenarios\/scenario-created$/, { timeout: 20_000 });
   await expect(page.getByRole("heading", { level: 1, name: "Created in browser" })).toBeVisible();
 });

@@ -55,10 +55,10 @@ const runDetail = await readFile(new URL("../app/runs/[id]/page.tsx", import.met
 const calibrationPage = await readFile(new URL("../app/calibration/page.tsx", import.meta.url), "utf8");
 const settingsPage = await readFile(new URL("../app/settings/page.tsx", import.meta.url), "utf8");
 const chartsDashboard = await readFile(new URL("../src/components/charts-dashboard.tsx", import.meta.url), "utf8");
-for (const needle of ["GET /scenarios?q=&status=", "Create and open", "Latest prediction"]) {
-  if (!scenariosPage.includes(needle)) throw new Error(`missing B.2 scenarios list affordance: ${needle}`);
+for (const needle of ["POST /scenarios/draft", "Create scenario", "Scenario list", "Delete scenario"]) {
+  if (!scenariosPage.includes(needle)) throw new Error(`missing scenarios list affordance: ${needle}`);
 }
-for (const needle of ["PATCH /scenarios/{id}", "Download backend report", "Run advanced intelligence", "Resolve prediction with feedback", "Scenario history and versions", "GET /analytics/charts?scenario_id=...", "Charts and analytical visualizations"]) {
+for (const needle of ["PATCH /scenarios/{id}", "Markdown report", "Run advanced intelligence", "Resolve prediction with feedback", "Scenario history and versions", "GET /analytics/charts?scenario_id=...", "Charts and analytical visualizations"]) {
   if (!scenarioDetail.includes(needle)) throw new Error(`missing B.2 scenario detail affordance: ${needle}`);
 }
 for (const needle of ["GET /kb/search?filters", "Semantic search", "current_only", "Create and inspect", "open contradiction"]){

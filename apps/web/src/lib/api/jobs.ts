@@ -10,7 +10,7 @@ export type OpsJob = {
   created_at?: string;
   updated_at?: string;
   started_at?: string | null;
-  finished_at?: string | null;
+  completed_at?: string | null;
 };
 
 export const jobsApi = {

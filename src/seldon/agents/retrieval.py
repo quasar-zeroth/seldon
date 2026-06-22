@@ -73,14 +73,21 @@ def relevance_score(query: str, document: RawDocument | ExternalSearchResult) ->
     return max(0.0, min(1.0, 0.65 * lexical + 0.35 * provider_score))
 
 
-def query_variations(query: str) -> list[str]:
-    """Generate the planned 2-3 search variations per subquery."""
+def query_variations(query: str, *, limit: int = 3) -> list[str]:
+    """Generate up to ``limit`` search variations per subquery.
+
+    Capping the number of variations limits how many engine queries each
+    subquery triggers, which is the main driver of 429 rate-limiting seen in
+    practice. Default 3 preserves the original behaviour.
+    """
     stripped = " ".join(query.split())
     variations = [stripped, f"{stripped} latest evidence", f"{stripped} news analysis"]
     deduped: list[str] = []
     for variation in variations:
         if variation and variation not in deduped:
             deduped.append(variation)
+        if len(deduped) >= max(1, limit):
+            break
     return deduped
 
 

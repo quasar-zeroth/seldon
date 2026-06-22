@@ -87,6 +87,7 @@ class Scenario(Base, TimestampMixin):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     description: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    original_prompt: Mapped[str | None] = mapped_column(Text)
     status: Mapped[str] = mapped_column(String(32), default="active", nullable=False)
     target_question: Mapped[str] = mapped_column(Text, nullable=False)
     time_horizon: Mapped[str] = mapped_column(String(255), default="", nullable=False)

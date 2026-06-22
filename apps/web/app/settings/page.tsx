@@ -33,6 +33,12 @@ async function updateAgentAction(formData: FormData) {
   revalidatePath("/settings");
 }
 
+async function clearAllDataAction(formData: FormData) {
+  "use server";
+  await settingsApi.clearAllData(String(formData.get("confirmation") || ""));
+  for (const path of ["/", "/settings", "/scenarios", "/kb", "/graph", "/runs", "/calibration"]) revalidatePath(path);
+}
+
 function pretty(value: unknown) {
   if (typeof value === "boolean") return value ? "yes" : "no";
   if (value == null || value === "") return "—";
@@ -82,6 +88,13 @@ export default async function SettingsPage() {
         <div className="settings-table">{Object.entries(config.agents).map(([agent, settings]) => <div className="row" key={agent}><span>{agent}</span><span className="muted">profile {settings.model_profile}{settings.model ? ` · ${settings.model}` : ""}{settings.temperature != null ? ` · temp ${settings.temperature}` : ""}{settings.max_tokens != null ? ` · max ${settings.max_tokens}` : ""}</span></div>)}</div>
       </Card>
       <StatusRows title="Source configuration/status" rows={effectiveStatus.source_configuration} />
+      <Card title="Danger zone">
+        <form action={clearAllDataAction} className="form-stack">
+          <p className="muted">Clear all Seldon runtime data: scenarios, KB entries and versions, graph nodes/edges/snapshots, predictions, runs, jobs, feedback/calibration data, audit logs, sources, and the local vector index.</p>
+          <label className="form-stack"><span className="warning-text">Type CLEAR ALL DATA to confirm. This cannot be undone from the app.</span><input name="confirmation" placeholder="CLEAR ALL DATA" required /></label>
+          <button className="button danger-button" type="submit">Clear all data</button>
+        </form>
+      </Card>
       <StatusRows title="Persistence backend status" rows={effectiveStatus.persistence_backend} />
       <StatusRows title="Vector backend status" rows={effectiveStatus.vector_backend} />
       <StatusRows title="Auth/API-key status" rows={effectiveStatus.auth} />

@@ -778,6 +778,472 @@ Implemented in the first follow-up batch:
 
 Still remaining after batch 1: true external web/news retrieval, production pgvector, model-backed E-J agents, full LLM invocation recorder binding, deep graph traversal, red-team pre-activation gating, cross-scenario intelligence agents, dedicated frontend pages/interactive graph/charts, restore/retention ops, and end-to-end/browser tests.
 
+
+## Follow-up B — Full GUI Integration and Dedicated UX Workstreams
+
+Follow-up B turns the current single-page Mission Control skeleton into the full backend-integrated Seldon operating console described in the frontend plan. This work should use `design.md` as the shared design contract for layout, navigation, visual language, mutation behavior, graph interaction, charts, and backend integration rules. Every frontend element introduced in Follow-up B — pages, forms, cards, tables, charts, graph controls, drawers, dialogs, empty states, loading states, and errors — should be designed against the principles and conventions in `design.md` before implementation.
+
+Current state to improve:
+
+- `apps/web` exists and builds as a Next.js app.
+- The GUI currently concentrates most functionality into `/` (`Mission Control`).
+- It reads real backend endpoints for health, scenarios, runs, graph nodes/edges, predictions, and model config.
+- It has a few real mutation flows: create scenario, queue phase jobs, and retry runs.
+- Many planned UX surfaces are still missing or partial: dedicated pages, interactive graph visualization, charts, settings persistence, feedback resolution, merge approval, edge editing, KB exploration, run details, backend report exports, browser tests, and production auth/API-key handling.
+
+### B.1 Routing, shell, and shared design system
+
+Goal: establish the web app structure needed for multiple pages without duplicating UI logic.
+
+Tasks:
+
+- Add a persistent app shell with navigation for Mission Control, Scenarios, KB, Graph, Runs, Calibration, and Settings.
+- Create dedicated routes:
+  - `/`
+  - `/scenarios`
+  - `/scenarios/[id]`
+  - `/kb`
+  - `/kb/[id]`
+  - `/graph`
+  - `/runs`
+  - `/runs/[id]`
+  - `/calibration`
+  - `/settings`
+- Extract shared UI components guided by `design.md`:
+  - `PageHeader`
+  - `StatusBadge`
+  - `MetricCard`
+  - `EvidencePill`
+  - `RunStatus`
+  - `EmptyState`
+  - `ErrorState`
+  - `LoadingSkeleton`
+  - `ConfirmMutationDialog`
+  - `AuditTrail`
+  - `SourceLink`
+- Split typed API access into focused modules, for example:
+  - `api/scenarios.ts`
+  - `api/kb.ts`
+  - `api/graph.ts`
+  - `api/runs.ts`
+  - `api/predictions.ts`
+  - `api/calibration.ts`
+  - `api/settings.ts`
+- Add route-level loading and error states for every page.
+- Keep Mission Control as an overview page that links into deeper pages instead of trying to contain all workflows.
+
+Backend integration requirements:
+
+- No page should rely on frontend-only mock records for persisted state.
+- Each page must document the backend endpoints it consumes.
+- Add missing backend read endpoints before wiring any page that needs data unavailable from the API.
+
+Acceptance checks:
+
+- `npm run typecheck`
+- `npm run build`
+- Basic navigation smoke test or Playwright route-load test for all routes.
+
+### B.2 Scenario list and Scenario Detail page
+
+Goal: make scenario creation, inspection, phase execution, prediction review, and scenario history usable outside the Mission Control overview.
+
+Tasks:
+
+- Build `/scenarios` with searchable/filterable scenario list, creation form, status filters, and latest prediction summary.
+- Build `/scenarios/[id]` with:
+  - scenario statement, timeframe, status, confidence, and metadata
+  - latest prediction card
+  - bull/base/bear or multi-branch probability display
+  - evidence chain
+  - assumptions registry preview
+  - phase run controls for context gathering, extraction, graph construction, prediction, advanced intelligence, and feedback where applicable
+  - scenario versions and diffs
+  - related agent runs and job statuses
+- Add mutation flows for:
+  - create scenario
+  - edit scenario metadata/status
+  - queue workflow phases
+  - run advanced intelligence for a prediction
+  - download/export scenario report from the backend, not only a client-side generated markdown blob
+
+Backend integration requirements:
+
+- Use real scenario endpoints: `GET /scenarios`, `POST /scenarios`, `GET /scenarios/{scenario_id}`, `PATCH /scenarios/{scenario_id}`.
+- Use job/agent endpoints: `POST /scenarios/{scenario_id}/jobs/{phase}`, phase-specific run endpoints where needed, `GET /ops/jobs/{job_id}`, `GET /runs`, and `GET /runs/{run_id}`.
+- Use prediction endpoints: `GET /predictions?scenario_id=...`, `GET /predictions/{prediction_id}`, versions, evidence links, and advanced intelligence endpoints.
+- Add a backend scenario report export endpoint if the UI needs server-generated downloads.
+
+Acceptance checks:
+
+- User can create a scenario, land on its detail page, queue a phase, see job/run status, and refresh to persisted backend state.
+- Scenario detail renders useful empty states before agents have run.
+
+### B.3 Knowledge Base Explorer and KB Entry Detail
+
+Goal: expose KB search, provenance, versions, contradictions, supersession, and evidence inspection as first-class workflows.
+
+Tasks:
+
+- Build `/kb` with:
+  - semantic and keyword search
+  - filters for topic, entity, source, valid date, created/updated date, perspective, sentiment, confidence, current-only, and scenario
+  - sortable result list with confidence/decay metadata
+  - contradiction and supersession indicators
+- Build `/kb/[id]` with:
+  - content and summary
+  - source/provenance panel
+  - linked scenarios, graph nodes/edges, and predictions
+  - versions timeline
+  - contradictions list
+  - supersession state
+- Add mutation flows for:
+  - create/edit KB entry where appropriate
+  - supersede an entry
+  - record/update contradiction status
+  - link/unlink scenario evidence if needed by prediction workflows
+
+Backend integration requirements:
+
+- Use `GET /kb/search`, `POST /kb/entries`, `GET /kb/entries/{entry_id}`, `PATCH /kb/entries/{entry_id}`, version, supersession, and contradiction endpoints.
+- If linked graph/prediction data is missing, add backend endpoints or query parameters rather than deriving relationships only on the client.
+
+Acceptance checks:
+
+- KB search filters round-trip to backend query parameters.
+- KB detail shows backend versions and contradiction/supersession state.
+
+### B.4 Dedicated interactive Graph Explorer
+
+Goal: replace the current list-based graph panel with a proper interactive visualization integrated with persisted graph data.
+
+Tasks:
+
+- Add React Flow, Sigma.js, or an equivalent graph visualization library.
+- Build `/graph` with:
+  - graph canvas
+  - node and edge tables as accessible alternatives
+  - filters for scenario, node type, relationship type, confidence, strength, direction, lag, evidence count, and importance
+  - layout controls: fit view, center selected node, expand neighborhood, reset filters, hide low-confidence edges
+  - overlays for confidence, strength, importance, instability, and scenario path
+  - node/edge detail drawer with evidence links, related KB entries, model/run provenance, editable fields, and audit history
+- Add mutation flows for:
+  - edit node state/description/stability/importance metadata
+  - edit edge confidence/strength/relationship metadata
+  - approve or reject merge proposals
+  - create graph snapshots
+  - compare graph snapshots/diffs
+  - import/reuse cross-scenario candidate nodes/edges where supported
+
+Backend integration requirements:
+
+- Use real graph endpoints: `GET/POST/PATCH /graph/nodes`, `GET/POST/PATCH /graph/edges`, `GET /graph/neighborhood/{node_id}`, snapshot/diff endpoints, and reuse-candidate endpoints.
+- Add explicit backend endpoints for merge approval/rejection if current extraction output only stores proposals in agent run output.
+- Ensure graph mutations persist audit records and return updated graph rows.
+
+Acceptance checks:
+
+- Graph canvas renders persisted backend nodes/edges.
+- Selecting a node/edge opens backend-sourced detail.
+- Editing edge confidence/strength persists through refresh.
+- Merge approval is not frontend-only; it calls backend mutation endpoints.
+
+### B.5 Agent Runs Console and Run Detail
+
+Goal: make agent execution observable, replayable, and debuggable.
+
+Tasks:
+
+- Build `/runs` with:
+  - filters by scenario, phase, agent, status, model/profile, date, and failure state
+  - run timeline grouped by scenario or phase
+  - retry buttons for failed/retryable runs
+  - links to created KB entries, graph changes, predictions, and feedback entries
+- Build `/runs/[id]` with:
+  - input/output JSON viewer
+  - messages
+  - model invocations, provider, token/cost metadata where available
+  - errors and elapsed time
+  - source references
+  - retry/re-dispatch action
+  - related audit log records
+
+Backend integration requirements:
+
+- Use `GET /runs`, `GET /runs/{run_id}`, messages, model invocation, retry, and audit-log endpoints.
+- If run outputs reference generated records by ID, expose convenient backend relation endpoints or include relations in run detail responses.
+
+Acceptance checks:
+
+- User can inspect a run from list to detail, see model metadata, and retry a retryable run.
+
+### B.6 Calibration, Feedback, and Outcome Resolution pages
+
+Goal: make feedback loops and calibration visible and actionable.
+
+Tasks:
+
+- Build `/calibration` with:
+  - calibration summary cards
+  - Brier/log score display
+  - bucketed confidence vs observed frequency chart
+  - resolved predictions table
+  - miss analysis list
+  - root-cause analysis detail drawer
+- Add feedback/resolution flows:
+  - resolve a prediction with actual outcome
+  - record missed factors
+  - mark failed assumptions
+  - submit graph corrections
+  - trigger re-prediction when feedback indicates stale or corrected assumptions
+- Add visual warnings for low sample sizes and stale calibration.
+
+Backend integration requirements:
+
+- Use `GET /calibration/summary`, feedback entries, outcome checks, prediction patch/resolution endpoints, and `POST /scenarios/{scenario_id}/run-feedback`.
+- Add or refine backend endpoints for prediction resolution if the current feedback flow is not ergonomic for UI use.
+- Ensure graph corrections submitted through feedback are persisted and auditable.
+
+Acceptance checks:
+
+- User can resolve a prediction, see calibration update from backend state, and inspect the resulting feedback/root-cause records.
+
+### B.7 Charts and analytical visualizations
+
+Goal: implement the charting promised in the frontend plan.
+
+Tasks:
+
+- Add a charting library such as Recharts or Visx.
+- Implement:
+  - probability history chart on scenario detail
+  - prediction confidence chart
+  - calibration curves and bucket charts
+  - sentiment drift chart
+  - uncertainty/cascade-risk visualization
+  - model/profile performance by agent type where backend data exists
+- Include empty/sample-size/error states for every chart.
+
+Backend integration requirements:
+
+- Use persisted prediction probability history, calibration summary, sentiment drift, advanced analyses, model invocations, and outcome checks.
+- Add backend aggregation endpoints where raw rows would force duplicated chart calculations in the client.
+
+Acceptance checks:
+
+- Charts render from real backend records and survive page refresh.
+- Charts clearly communicate missing or insufficient data.
+
+### B.8 Settings page and model/source/backend configuration UX
+
+Goal: replace the current read-only settings mock with a real settings surface.
+
+Tasks:
+
+- Build `/settings` with:
+  - OpenRouter model profile IDs
+  - agent-specific overrides
+  - fallback models
+  - source configuration/status
+  - persistence backend status
+  - vector backend status
+  - auth/API-key status
+- Add mutation flows for editable runtime settings where safe:
+  - update model profiles
+  - update fallback models
+  - update agent overrides
+- Clearly distinguish runtime-editable settings from deploy-time/environment settings.
+
+Backend integration requirements:
+
+- Use `GET /config/models` and `PATCH /config/models` where supported.
+- Add backend validation for model/profile updates.
+- Do not expose secrets in the UI. Show presence/status only for secret-backed config.
+
+Acceptance checks:
+
+- User can update a safe model/profile setting, see validation errors if invalid, and refresh to the persisted or active backend value.
+
+### B.9 Backend API hardening specifically for GUI integration
+
+Goal: make the backend ergonomic and safe for the full GUI, not just minimally reachable.
+
+Tasks:
+
+- Audit every planned GUI interaction and map it to a backend endpoint.
+- Add missing endpoints for:
+  - scenario report exports
+  - merge proposal approval/rejection
+  - prediction resolution if separate from feedback run submission
+  - backend aggregation for charts
+  - related-record lookups for scenario/KB/graph/run detail pages
+  - job/run polling convenience where needed
+- Add consistent response schemas for page-facing endpoints.
+- Add pagination/sorting/filtering to list endpoints used by the GUI.
+- Add API-key/auth support in frontend client helpers and document local vs production behavior.
+- Ensure CORS and Docker networking work for local, compose, and production deployments.
+
+Acceptance checks:
+
+- Each GUI mutation has a backend test proving persistence and expected response shape.
+- Each page-facing read endpoint has tests for filters, empty states, and not-found cases.
+
+### B.10 Frontend testing, browser tests, and CI gates
+
+Goal: prevent regressions as the GUI becomes multi-page and interactive.
+
+Tasks:
+
+- Add Playwright or equivalent browser tests.
+- Add tests for:
+  - route loads
+  - scenario creation
+  - phase job queueing
+  - run retry
+  - KB search filters
+  - graph render and node/edge detail selection
+  - edge edit persistence
+  - feedback resolution
+  - settings validation
+- Add component/unit tests for complex UI state where browser tests would be too heavy.
+- Keep CI running:
+  - `npm run typecheck`
+  - `npm run build`
+  - frontend tests
+  - backend API tests used by GUI flows
+
+Acceptance checks:
+
+- CI fails if a planned route does not build, a core mutation breaks, or backend API contracts used by the GUI drift unexpectedly.
+
+### B.11 Implementation order recommendation
+
+Implement Follow-up B in this order to keep integration risk low:
+
+1. B.1 app shell, routes, shared components, and typed API split.
+2. B.9 backend endpoint audit and small missing endpoint additions.
+3. B.2 Scenario pages and workflow job status.
+4. B.5 Runs console and run detail.
+5. B.3 KB Explorer and KB detail.
+6. B.4 interactive Graph Explorer and graph mutations.
+7. B.6 Calibration/Feedback pages.
+8. B.7 charts and analytical visualizations.
+9. B.8 Settings persistence.
+10. B.10 browser tests and final CI hardening.
+
+Definition of done for Follow-up B:
+
+- Dedicated pages exist for all major planned frontend surfaces.
+- Mission Control is an overview, not the only GUI.
+- All displayed persistent state is sourced from FastAPI.
+- All mutation flows call backend endpoints and persist through refresh.
+- Graph visualization uses a real graph library with interactive selection/filtering.
+- Charts render from persisted backend data.
+- Settings are either safely editable through backend APIs or explicitly marked deploy-time/read-only.
+- Docker/local development documentation identifies how the web app reaches the API.
+- Frontend build/typecheck and GUI-focused backend tests pass.
+
+## Follow-up C — Remaining Plan Gaps After Full Repo Review
+
+This review pass re-checked the current repo against both `implementation-plan.md` and `prediction-system-plan.md` after Follow-up B work. The project now has the multi-page Next.js console, broad FastAPI CRUD/read coverage, queued phase jobs, graph mutation endpoints, chart surfaces, settings UX, browser regression tests, Docker/CI basics, deterministic local embeddings, and complete Phase E-J skeleton workflows. The remaining work is no longer mostly GUI scaffolding; it is the deeper prediction-system functionality promised in the two plans: real external research, model-backed specialist agents, richer graph/prediction algorithms, production vector/Postgres behavior, durable orchestration, and harder end-to-end validation.
+
+### C.1 External research and ingestion pipeline
+
+- **True web/news/API/forum retrieval is still missing:** `InformationRetriever` searches the existing KB and accepts explicit external documents, but it does not execute 2-3 search variations per subquery, call search/news/forum APIs, fetch result pages, or rank external sources for relevance.
+- **Raw document processing is not implemented:** there is no fetcher/reader layer for URL retrieval, boilerplate stripping, content normalization, source date extraction, duplicate URL handling, or raw-document provenance records before summarization.
+- **Summarization remains deterministic and shallow:** `InformationSummarizer` creates compact observations from retrieved snippets rather than extracting multiple discrete factual claims from long documents with temporal relevance, entity tags, sentiment/perspective tags, surprise flags, and contradiction flags.
+- **Contradiction resolution is not model-backed:** contradictions can be recorded, but there is no Sonnet/reasoning-model adjudication flow that weighs source reliability, dates, and context before marking likely truth or supersession.
+- **Delta detection is not semantic enough:** local embeddings exist, but dedup/update decisions still need thresholded semantic comparison, update-vs-new classification, and richer supersession suggestions over existing KB entries.
+
+### C.2 OpenRouter usage, agent intelligence, and model invocation auditability
+
+- **Phase E-J agents are mostly heuristic placeholders:** the coordinator/specialist structure exists, but core agents do not use `llm_client.complete_json` for the planned extraction, relationship detection, prediction reasoning, red-team, root-cause, expert-perspective, and information-value work.
+- **Per-agent model config is not consistently applied by live agents:** `AgentsConfig` and `OpenRouterClient` support agent overrides, but `AgentBase` does not provide a standard helper that every specialist uses with its `agent_id`, `model_profile`, temperature, max tokens, validation schema, and escalation policy.
+- **Confidence/complexity escalation is not implemented:** specialists do not automatically escalate from fast to balanced/reasoning models when confidence is low, contradictions appear, or a task is inherently complex.
+- **Validation-repair retries need to be agent-level:** OpenRouter JSON parsing and schema validation exist, but agents do not re-prompt with schema errors or partial output repair instructions when a structured result fails validation.
+- **Relational invocation recording is not bound to app-created LLM clients:** `DatabaseModelInvocationRecorder` exists, but `create_app()` still constructs a plain `OpenRouterClient(app_config.llm)`, so live API/queued phase runs do not automatically attach model invocation rows to the active DB session and `agent_run_id`.
+- **Provider/cost normalization remains minimal:** model invocation records store returned metadata, but there is no provider normalization, token-price table, estimated cost fallback, or per-provider reliability tracking.
+
+### C.3 Vector search, embeddings, and storage backend completeness
+
+- **Production pgvector is not implemented:** PostgreSQL is available through SQLAlchemy/compose, but there is no pgvector extension migration, vector column type, vector index, or backend-specific nearest-neighbor query.
+- **Embeddings are deterministic local hashes, not model embeddings:** the current SQLite-friendly seam is useful for tests/dev, but the plan calls for OpenRouter-compatible embedding generation and production vector indexing.
+- **Vector index lifecycle is incomplete:** KB writes populate `content_embedding`, but there is no separate vector index rebuild command/job, drift detection, embedding model version migration, or restore flow.
+- **Semantic ranking is not combined with temporal decay and source confidence everywhere:** repository helpers exist, but retrieval, dedup, UI relevance, and scenario context selection do not consistently use a unified ranking formula.
+
+### C.4 Graph algorithms, reuse, and cross-scenario intelligence
+
+- **DB-to-NetworkX adapter is still missing:** NetworkX remains a dependency/legacy module, but current persisted ERG rows are not exposed as reusable NetworkX graph views for centrality, traversal, connected-components, PageRank, or scenario-path analysis.
+- **Relationship detection is heuristic, not evidence-reasoned:** `PairwiseRelationshipDetector` infers relationships from keywords/co-occurrence instead of asking a bounded relationship detector to explain mechanisms, lag, direction, strength, and evidence sufficiency.
+- **Importance scoring lacks true centrality:** degree/evidence/scenario heuristics should be replaced or augmented with NetworkX/PageRank-style centrality and dependency depth.
+- **Graph consistency checking is partial:** duplicate/unsupported/stale/reverse checks exist, but orphan nodes, disconnected subgraphs, overly dense clusters, missing obvious relationships, and contradictory causal cycles are not fully handled.
+- **Merge approval is endpoint-level but not fully discoverable:** approve/reject endpoints exist, but merge proposals are not first-class persisted records with list/detail APIs, review state, alias preservation, and safe reference-rewrite previews.
+- **Shared Graph Manager is not implemented:** reuse candidates exist, but there is no agent that proposes starter graphs for new scenarios, imports accepted shared nodes/edges with lineage, and propagates updates across dependent scenarios.
+- **Cross-Scenario Correlation Detector is missing:** the system does not detect contradictory predictions, shared dependency changes, scenario synergies, or correlation clusters across active scenarios.
+
+### C.5 Prediction engine depth and activation workflow
+
+- **Node forecasts are simplified:** `NodeStatePredictor` emits one deterministic forecast per node rather than 2-5 possible state changes with probabilities, confidence, reasoning traces, and key assumptions.
+- **Traversal simulation is shallow:** `GraphTraversalSimulator` inspects local relationships rather than performing BFS/DFS cascades with cumulative probability propagation, independence adjustment, convergence detection, path logging, and feedback-loop instability.
+- **Scenario synthesis is still bull/base/bear centric:** output should support 3-7 arbitrary coherent scenarios clustered from traversal results, not only fixed bull/base/bear branches.
+- **Base rates are not consumed before prediction:** Phase J can create base-rate evidence after a prediction, but the prediction agents do not anchor forecasts to historical/base-rate priors or justify deviations.
+- **Red-team activation gate is not enforced:** adversarial review exists as an advanced-intelligence endpoint, but `PredictionCoordinator` does not run it before activation or block/flag activation when critique thresholds fail.
+- **Prediction version diffs are limited:** scenario/prediction versions exist, but richer diffs should explain probability shifts, driver changes, evidence additions/removals, assumption changes, and graph changes in a human-auditable way.
+
+### C.6 Feedback, learning, and calibration automation
+
+- **Outcome monitoring is manual only:** resolution requires supplied actual outcome; there is no scheduled monitor that searches external ground truth for active predictions near/after resolution dates.
+- **Feedback does not trigger re-prediction:** graph corrections and failed assumptions can be stored/applied, but the system does not decide when corrected/stale assumptions require a fresh prediction job.
+- **Assumption invalidation is incomplete:** matching assumptions can be marked invalid from feedback, but there is no periodic assumption checker, dependent-scenario alerting, or automatic KB supersession of failed premises.
+- **Calibration remains small-sample/basic:** Brier/log/bucket metrics exist, but per-agent/per-model/profile calibration accuracy is not computed from attributed forecasts in a statistically meaningful way.
+- **Root-cause analysis is heuristic:** missed-factor and graph-correction analysis should be model-backed and connected to concrete KB/ERG updates with confidence and audit trails.
+
+### C.7 Message bus, orchestration, and live updates
+
+- **Agent messages are persisted but not used as a real message bus:** coordinators call specialists directly; there is no structured inter-agent message envelope, routing state, or replayable message timeline as described in the system plan.
+- **Phase jobs are in-process only:** queued jobs work for local use, but they are not durable across process restarts and do not support distributed workers, cancellation, leases, retry policies, or idempotency keys.
+- **SSE/live update routes are still absent:** `/events/runs` and `/events/scenarios/{id}` remain unimplemented, so the frontend relies on refresh/navigation rather than streaming run/scenario updates.
+- **Run retry remains narrow:** retry can re-dispatch known coordinator phases, but arbitrary specialist runs, advanced-intelligence runs, feedback runs, and failed child-run replay are not generally reconstructable.
+- **Convergence loop semantics are still weak:** coverage targets, gap semantics, contradiction resolution counts, and new implied subqueries/nodes are not used as first-class stop/continue criteria.
+
+### C.8 API and frontend workflow gaps that remain after Follow-up B
+
+- **Pagination/sorting is incomplete across large lists:** many list endpoints and pages expose filters, but not consistent pagination, sort keys, cursors/limits, or total counts for scenarios, KB entries, runs, audit logs, model invocations, and graph rows.
+- **Settings persistence is runtime-only:** model settings can be edited safely in the running app, but there is no persisted TOML/env/config write path, audit trail for config changes, or restart/deploy boundary policy.
+- **Scenario report export is Markdown-only:** `/scenarios/{id}/report` returns text; richer PDF/HTML/JSON export packages and backend-generated downloadable artifacts remain unimplemented.
+- **Frontend graph layout is basic:** React Flow is integrated, but layout is deterministic circular positioning rather than force/hierarchical layouts, large-graph virtualization, canvas performance tuning, and full interactive neighborhood expansion.
+- **Merge review UX requires manual proposal IDs:** the UI can approve/reject by ID, but there is no first-class proposal inbox showing candidate pairs, rationale, aliases, affected references, and risk preview.
+- **Feedback graph-correction UX is raw JSON:** calibration/feedback accepts graph corrections as JSON text rather than guided add/modify/remove node/edge forms with validation.
+
+### C.9 Production operations and deployment hardening
+
+- **No first-class CLI package exists:** `src/seldon/cli` is still absent, so local operations for scenarios, jobs, backups, seed/demo data, exports, migrations, and vector rebuilds require API calls or ad hoc scripts.
+- **Docker compose does not run migrations or pgvector setup:** compose starts API/web/Postgres, but lacks migration-on-start, pgvector extension configuration, healthcheck-gated dependencies, and production secrets guidance.
+- **Backup/restore is incomplete:** backups are DB-focused with optional vector directory inclusion; restore workflow, retention policy, scheduled backup jobs, and backup verification are missing.
+- **Auth is API-key only:** there is no user/session model, roles, OAuth/OIDC integration, per-route authorization, or production-grade secret rotation guidance.
+- **Observability is basic:** structured request logs exist, but there are no metrics, traces, run/job dashboards, alerting hooks, or cost/latency budgets.
+
+### C.10 Test and CI gaps
+
+- **No full external-data end-to-end test exists:** there is no test that creates a scenario, retrieves external sources, writes embedded KB entries, extracts graph nodes, detects relationships, predicts, red-teams, resolves, calibrates, and re-predicts.
+- **Model-backed contract tests are missing:** current tests validate deterministic skeleton behavior; they do not fixture LLM outputs for each specialist schema, validation repair, escalation, or model metadata capture.
+- **Deep graph/prediction algorithm tests are missing:** there are no tests for multi-hop traversal, centrality/PageRank, cascade propagation, scenario clustering, base-rate anchoring, or red-team activation gating.
+- **Frontend browser coverage is still representative, not complete:** route and core workflow tests exist, but coverage should add KB filter round-trips, run detail/model metadata, graph selection/edit persistence, merge review, feedback guided corrections, settings validation persistence, and chart empty/error states.
+- **CI lacks production hardening gates:** no Docker build/run smoke, migration upgrade/downgrade check, pgvector integration test, coverage threshold, security/dependency scan, or backup/restore smoke test is configured.
+
+### C.11 Suggested implementation order for Follow-up C
+
+1. Bind DB-backed model invocation recording to live agent runs, then add an `AgentBase` LLM helper that applies per-agent config, schema validation, repair retries, and escalation metadata.
+2. Convert the highest-impact specialists to model-backed contracts first: summarizer, relationship detector, scenario synthesizer, red-team gate, and root-cause analyzer.
+3. Build real external retrieval/document ingestion behind a small provider interface, with mocked-provider tests before adding live providers.
+4. Replace deterministic-only embeddings with an embedding provider seam plus pgvector migrations/query path while keeping the SQLite fallback.
+5. Add DB-to-NetworkX graph views, centrality scoring, and multi-hop traversal/cascade tests.
+6. Enforce prediction activation gates: base-rate anchoring before synthesis and red-team review before activation.
+7. Implement cross-scenario intelligence agents: Shared Graph Manager and Cross-Scenario Correlation Detector.
+8. Upgrade orchestration from in-process-only jobs toward durable jobs/messages, then add SSE run/scenario event streams.
+9. Harden production operations: CLI, migrations in compose, backup restore/retention, auth policy, observability, and Docker/pgvector CI smoke tests.
+10. Finish high-risk UX gaps: merge proposal inbox, guided feedback graph corrections, richer report exports, large-graph layout, and broader Playwright coverage.
+
 ## 8. Initial Milestones
 
 ### Milestone 1 — Clean Seldon package

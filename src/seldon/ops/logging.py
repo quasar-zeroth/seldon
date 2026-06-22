@@ -4,6 +4,8 @@ from __future__ import annotations
 import json
 import logging
 from datetime import datetime, timezone
+from logging.handlers import RotatingFileHandler
+from pathlib import Path
 from typing import Any
 
 
@@ -23,12 +25,22 @@ class JsonFormatter(logging.Formatter):
         return json.dumps(data, default=str, separators=(",", ":"))
 
 
-def configure_structured_logging(*, json_logs: bool = True, level: str = "INFO") -> None:
+def _formatter(json_logs: bool) -> logging.Formatter:
+    if json_logs:
+        return JsonFormatter()
+    return logging.Formatter("%(asctime)s %(levelname)s [%(name)s] %(message)s")
+
+
+def configure_structured_logging(*, json_logs: bool = True, level: str = "INFO", log_file: str | Path | None = None, max_bytes: int = 10_000_000, backup_count: int = 5) -> None:
     root = logging.getLogger()
     root.setLevel(level.upper())
-    handler = logging.StreamHandler()
-    if json_logs:
-        handler.setFormatter(JsonFormatter())
-    else:
-        handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s [%(name)s] %(message)s"))
-    root.handlers[:] = [handler]
+    stream_handler = logging.StreamHandler()
+    stream_handler.setFormatter(_formatter(json_logs))
+    handlers: list[logging.Handler] = [stream_handler]
+    if log_file is not None:
+        path = Path(log_file)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        file_handler = RotatingFileHandler(path, maxBytes=max_bytes, backupCount=backup_count, encoding="utf-8")
+        file_handler.setFormatter(_formatter(json_logs))
+        handlers.append(file_handler)
+    root.handlers[:] = handlers

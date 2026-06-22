@@ -1,11 +1,19 @@
 import { revalidatePath } from "next/cache";
 import Link from "next/link";
 import { redirect } from "next/navigation";
-import { PageHeader, Card, EmptyState, EndpointList, StatusBadge, EvidencePill, RunStatus, ConfirmMutationDialog, MetricCard } from "../../../src/components/ui";
+import { PageHeader, Card, EmptyState, EndpointList, EvidencePill, RunStatus, ConfirmMutationDialog, MetricCard } from "../../../src/components/ui";
 import { ScenarioAnalyticsCharts } from "../../../src/components/charts-dashboard";
-import { scenariosApi, predictionsApi, runsApi, graphApi, jobsApi, analyticsApi, type ScenarioPrediction } from "../../../src/lib/api";
+import { scenariosApi, predictionsApi, runsApi, graphApi, jobsApi, analyticsApi, type OpsJob, type ScenarioPrediction } from "../../../src/lib/api";
 
 const phases = ["context_gathering", "extraction", "graph_construction", "prediction"] as const;
+
+async function deleteScenarioAction(formData: FormData) {
+  "use server";
+  const id = String(formData.get("scenario_id") || "");
+  if (!id) return;
+  await scenariosApi.delete(id);
+  redirect("/scenarios");
+}
 
 async function editScenarioAction(formData: FormData) {
   "use server";
@@ -15,7 +23,6 @@ async function editScenarioAction(formData: FormData) {
     target_question: String(formData.get("target_question") || ""),
     description: String(formData.get("description") || ""),
     time_horizon: String(formData.get("time_horizon") || ""),
-    status: String(formData.get("status") || "active"),
   });
   revalidatePath(`/scenarios/${id}`);
 }
@@ -64,6 +71,15 @@ function probabilityEntries(prediction?: ScenarioPrediction) {
   return prediction.scenarios.map((item, index) => ({ label: item.outcome ?? `Branch ${index + 1}`, probability: Number(item.probability ?? 0), confidence: Number(item.confidence ?? prediction.confidence) }));
 }
 
+function jobPhase(job: OpsJob) {
+  const phase = typeof job.payload?.phase === "string" ? job.payload.phase : undefined;
+  return phase ? phase.replaceAll("_", " ") : job.kind;
+}
+
+function jobTimestamp(job: OpsJob) {
+  return job.completed_at || job.updated_at || job.started_at || job.created_at || "";
+}
+
 export default async function ScenarioDetail({ params, searchParams }: { params: { id: string }; searchParams?: { job_id?: string; advanced_run?: string } }) {
   const [scenario, predictions, runs, nodes, jobs, analytics] = await Promise.all([
     scenariosApi.get(params.id),
@@ -84,8 +100,7 @@ export default async function ScenarioDetail({ params, searchParams }: { params:
     <PageHeader
       title={scenario.name}
       subtitle={scenario.target_question}
-      status={<StatusBadge status={scenario.status} />}
-      action={<><a className="button" href={scenariosApi.reportHref(scenario.id)}>Markdown report</a><a className="button" href={scenariosApi.reportHref(scenario.id, "html")}>HTML report</a><a className="button" href={scenariosApi.reportHref(scenario.id, "json")}>JSON export</a></>}
+      action={<><a className="button" href={scenariosApi.reportHref(scenario.id)}>Markdown report</a><a className="button" href={scenariosApi.reportHref(scenario.id, "html")}>HTML report</a><a className="button" href={scenariosApi.reportHref(scenario.id, "json")}>JSON export</a><form action={deleteScenarioAction}><input type="hidden" name="scenario_id" value={scenario.id} /><ConfirmMutationDialog label="Delete scenario"><button className="button danger-button" type="submit">Delete permanently</button></ConfirmMutationDialog></form></>}
     />
     <EndpointList endpoints={["GET /scenarios/{id}", "PATCH /scenarios/{id}", "GET /predictions?scenario_id=...", "GET /predictions/{id}/versions", "GET /predictions/{id}/evidence", "POST /scenarios/{id}/jobs/{phase}", "GET /ops/jobs", "GET /runs", "POST /predictions/{id}/run-advanced-intelligence", "POST /scenarios/{id}/run-feedback", "GET /scenarios/{id}/report", "GET /analytics/charts?scenario_id=..."]} />
     <section className="grid">
@@ -93,6 +108,7 @@ export default async function ScenarioDetail({ params, searchParams }: { params:
       <MetricCard label="Confidence" value={latest ? `${Math.round(latest.confidence * 100)}%` : "—"} />
       <MetricCard label="Predictions" value={predictions.length} />
       <MetricCard label="Related runs" value={scopedRuns.length} />
+      <MetricCard label="Related jobs" value={scopedJobs.length} />
     </section>
     <section className="wide-grid">
       <Card title="Edit scenario metadata">
@@ -102,9 +118,6 @@ export default async function ScenarioDetail({ params, searchParams }: { params:
           <textarea name="target_question" defaultValue={scenario.target_question} rows={3} />
           <textarea name="description" defaultValue={scenario.description} rows={3} />
           <input name="time_horizon" defaultValue={scenario.time_horizon} />
-          <select name="status" defaultValue={scenario.status}>
-            <option value="active">Active</option><option value="paused">Paused</option><option value="completed">Completed</option><option value="archived">Archived</option>
-          </select>
           <button className="button" type="submit">Save metadata</button>
         </form>
       </Card>
@@ -145,8 +158,14 @@ export default async function ScenarioDetail({ params, searchParams }: { params:
         {versions.length ? versions.map((version, index) => <p className="muted" key={String(version.id ?? index)}>Prediction version {String(version.version ?? index + 1)}</p>) : <p className="muted">No prediction version records yet.</p>}
       </Card>
       <Card title="Related agent runs and jobs">
-        {scopedJobs.length ? scopedJobs.slice(0, 8).map((job) => <div className="row" key={job.id}><span>{job.kind} job</span><RunStatus status={job.status} /></div>) : <p className="muted">No persisted jobs associated with this scenario yet.</p>}
-        {scopedRuns.length ? scopedRuns.slice(0, 8).map((run) => <div className="row" key={run.id}><Link href={`/runs/${run.id}`}>{run.agent_id}</Link><RunStatus status={run.status} /></div>) : <EmptyState detail="No agent runs found yet." />}
+        <h3>Persisted jobs</h3>
+        {scopedJobs.length ? scopedJobs.map((job) => <div className="timeline-item" key={job.id}>
+          <div className="row"><span>{jobPhase(job)} job</span><RunStatus status={job.status} /></div>
+          <p className="muted"><code>{job.id}</code>{jobTimestamp(job) ? ` · ${jobTimestamp(job)}` : ""}</p>
+          {job.error ? <p className="muted warning-text">Error: {job.error}</p> : null}
+        </div>) : <p className="muted">No persisted jobs associated with this scenario yet.</p>}
+        <h3>Agent runs</h3>
+        {scopedRuns.length ? scopedRuns.map((run) => <div className="row" key={run.id}><Link href={`/runs/${run.id}`}>{run.agent_id}</Link><RunStatus status={run.status} /></div>) : <EmptyState detail="No agent runs found yet." />}
       </Card>
       <Card title="Related graph nodes">
         {scopedNodes.length ? <div className="pill-row">{scopedNodes.slice(0, 16).map((node) => <span className={`pill ${node.type}`} key={node.id}>{node.type}: {node.name}</span>)}</div> : <EmptyState detail="Run extraction/graph construction to attach nodes." />}

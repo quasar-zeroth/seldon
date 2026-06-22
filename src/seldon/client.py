@@ -4,7 +4,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from .config import SeldonConfig
-from .llm import LLMClientProtocol, ModelInvocationRecorder, OpenRouterClient
+from .llm import LLMClientProtocol, ModelInvocationRecorder, build_llm_client
 from .predictions.engine import PredictionEngine
 from .graph.knowledge_graph import KnowledgeGraph
 from .graph.entity_extractor import EntityExtractor
@@ -49,8 +49,8 @@ class SeldonClient:
 
     def __init__(self, config: SeldonConfig | None = None, llm_client: LLMClientProtocol | None = None):
         self.config = config or SeldonConfig()
-        self.llm_client = llm_client or OpenRouterClient(
-            self.config.llm,
+        self.llm_client = llm_client or build_llm_client(
+            self.config,
             recorder=ModelInvocationRecorder(self.config.data_dir / "model_invocations.jsonl"),
         )
         self.predictions = PredictionEngine(

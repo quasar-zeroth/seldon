@@ -1,0 +1,6 @@
+services:
+  web:
+    environment:
+      # These must be LAN-visible, not localhost, for phones/laptops on the network.
+      NEXT_PUBLIC_SELDON_API_URL: http://192.168.0.115:8000
+      NEXT_PUBLIC_SELDON_BROWSER_API_URL: http://192.168.0.115:8000

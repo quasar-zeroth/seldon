@@ -97,9 +97,23 @@ class GraphSnapshotRead(BaseModel):
     agent_id: str | None = None
 
 
+class ScenarioDraftRequest(BaseModel):
+    prompt: str = Field(min_length=8, max_length=4000)
+    default_time_horizon: str | None = Field(default=None, max_length=255)
+
+
+class ScenarioDraftResponse(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    target_question: str = Field(min_length=1, max_length=600)
+    time_horizon: str = Field(default="", max_length=255)
+    description: str = Field(default="", max_length=1600)
+    source_prompt: str = Field(default="", max_length=4000)
+
+
 class ScenarioCreate(BaseModel):
     name: str
     description: str = ""
+    original_prompt: str | None = Field(default=None, max_length=4000)
     status: Literal["active", "paused", "archived", "completed"] = "active"
     target_question: str
     time_horizon: str = ""
@@ -272,6 +286,7 @@ class ScenarioRead(ScenarioCreate):
 class ScenarioUpdate(BaseModel):
     name: str | None = None
     description: str | None = None
+    original_prompt: str | None = Field(default=None, max_length=4000)
     status: str | None = None
     target_question: str | None = None
     time_horizon: str | None = None

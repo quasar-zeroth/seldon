@@ -7,10 +7,39 @@ from seldon.config import SeldonConfig
 from seldon.data.database import create_all, make_engine, make_session_factory
 
 
+class ScenarioDraftLLM:
+    def complete_json(self, messages, system=None, **kwargs):
+        return {
+            "name": "Gold breakout",
+            "target_question": "Will gold break above $2,800 within six months?",
+            "time_horizon": "6 months",
+            "description": "Scope includes Fed cuts, dollar strength, central-bank demand, and geopolitical risk.",
+        }
+
+
+class FailingScenarioDraftLLM:
+    def complete_json(self, messages, system=None, **kwargs):
+        raise RuntimeError("unauthorized")
+
+
 def api_client() -> TestClient:
     engine = make_engine("sqlite:///:memory:")
     create_all(engine)
     return TestClient(create_app(SeldonConfig(), session_factory=make_session_factory(engine)))
+
+
+def test_api_writes_structured_logs_to_file(tmp_path):
+    cfg = SeldonConfig(data_dir=tmp_path)
+    engine = make_engine("sqlite:///:memory:")
+    create_all(engine)
+    client = TestClient(create_app(cfg, session_factory=make_session_factory(engine)))
+
+    response = client.get("/health")
+
+    assert response.status_code == 200
+    log_file = tmp_path / "logs" / "seldon.log"
+    assert log_file.exists()
+    assert "request completed" in log_file.read_text()
 
 
 def test_health_and_openapi_are_available():
@@ -25,15 +54,62 @@ def test_health_and_openapi_are_available():
     assert openapi.json()["info"]["title"] == "The Seldon Project API"
 
 
+def test_scenario_draft_endpoint_uses_fast_llm_metadata_extraction():
+    engine = make_engine("sqlite:///:memory:")
+    create_all(engine)
+    client = TestClient(create_app(SeldonConfig(), session_factory=make_session_factory(engine), llm_client=ScenarioDraftLLM()))
+
+    response = client.post("/scenarios/draft", json={"prompt": "I want to understand whether gold breaks above $2,800 in the next six months."})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["name"] == "Gold breakout"
+    assert body["time_horizon"] == "6 months"
+    assert "gold" in body["target_question"].lower()
+    assert body["source_prompt"].startswith("I want to understand")
+
+
+def test_scenario_draft_endpoint_falls_back_when_llm_is_unavailable():
+    engine = make_engine("sqlite:///:memory:")
+    create_all(engine)
+    client = TestClient(create_app(SeldonConfig(), session_factory=make_session_factory(engine), llm_client=FailingScenarioDraftLLM()))
+
+    response = client.post("/scenarios/draft", json={"prompt": "Forecast copper demand with no horizon"})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["name"] == "Forecast copper demand with no horizon"
+    assert body["time_horizon"] == "6 months / 1 year"
+    assert "current baseline" in body["description"]
+    assert body["description"] != body["source_prompt"]
+
+
+def test_scenario_draft_fallback_summarizes_gold_price_question_without_truncating_prompt():
+    engine = make_engine("sqlite:///:memory:")
+    create_all(engine)
+    client = TestClient(create_app(SeldonConfig(), session_factory=make_session_factory(engine), llm_client=FailingScenarioDraftLLM()))
+
+    response = client.post("/scenarios/draft", json={"prompt": "I want to know what would the price of gold would look like in 6 months and in a year"})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["name"] == "Gold price outlook over 6 months and 12 months"
+    assert not body["name"].lower().startswith("i want")
+    assert "current spot price" in body["description"]
+    assert "Federal Reserve policy" in body["description"]
+    assert body["description"] != body["source_prompt"]
+
+
 def test_scenario_kb_graph_and_run_routes_smoke():
     client = api_client()
 
     scenario_response = client.post(
         "/scenarios",
-        json={"name": "Gold outlook", "target_question": "Where will gold trade in 6 months?", "time_horizon": "6 months"},
+        json={"name": "Gold outlook", "target_question": "Where will gold trade in 6 months?", "time_horizon": "6 months", "original_prompt": "I want to understand gold over the next 6 months."},
     )
     assert scenario_response.status_code == 201
     scenario = scenario_response.json()
+    assert scenario["original_prompt"] == "I want to understand gold over the next 6 months."
     assert client.get("/scenarios").json()[0]["id"] == scenario["id"]
 
     kb_response = client.post(
@@ -82,20 +158,19 @@ def test_error_responses_are_consistent():
     assert body["error"]["details"]
 
 
-def test_scenario_filters_patch_and_backend_report_export():
+def test_scenario_search_patch_and_backend_report_export():
     client = api_client()
 
-    gold = client.post("/scenarios", json={"name": "Gold outlook", "target_question": "Gold?", "description": "Metals", "status": "active"}).json()
-    client.post("/scenarios", json={"name": "Oil outlook", "target_question": "Oil?", "status": "paused"})
+    gold = client.post("/scenarios", json={"name": "Gold outlook", "target_question": "Gold?", "description": "Metals"}).json()
+    client.post("/scenarios", json={"name": "Oil outlook", "target_question": "Oil?"})
 
-    filtered = client.get("/scenarios", params={"q": "gold", "status": "active"})
+    filtered = client.get("/scenarios", params={"q": "gold"})
     assert filtered.status_code == 200
     assert [item["id"] for item in filtered.json()] == [gold["id"]]
 
-    patched = client.patch(f"/scenarios/{gold['id']}", json={"time_horizon": "6 months", "status": "paused"})
+    patched = client.patch(f"/scenarios/{gold['id']}", json={"time_horizon": "6 months"})
     assert patched.status_code == 200
     assert patched.json()["time_horizon"] == "6 months"
-    assert patched.json()["status"] == "paused"
 
     prediction = client.post(
         "/predictions",
@@ -117,6 +192,24 @@ def test_scenario_filters_patch_and_backend_report_export():
     assert "- base: 55%" in report.text
 
 
+def test_delete_scenario_removes_owned_records_and_unlinks_shared_context():
+    client = api_client()
+
+    scenario = client.post("/scenarios", json={"name": "Delete me", "target_question": "Delete?"}).json()
+    prediction = client.post("/predictions", json={"scenario_id": scenario["id"], "statement": "Temporary prediction"}).json()
+    kb = client.post("/kb/entries", json={"content": "Temporary context", "scenario_ids": [scenario["id"]]}).json()
+    node = client.post("/graph/nodes", json={"name": "Temporary node", "type": "topic", "scenario_ids": [scenario["id"]]}).json()
+
+    response = client.delete(f"/scenarios/{scenario['id']}")
+
+    assert response.status_code == 200
+    assert response.json() == {"deleted": True, "scenario_id": scenario["id"]}
+    assert client.get(f"/scenarios/{scenario['id']}").status_code == 404
+    assert client.get(f"/predictions/{prediction['id']}").status_code == 404
+    assert scenario["id"] not in client.get(f"/kb/entries/{kb['id']}").json()["scenario_ids"]
+    assert scenario["id"] not in client.get(f"/graph/nodes/{node['id']}").json()["scenario_ids"]
+
+
 def test_model_config_patch_updates_local_profiles():
     client = api_client()
 
@@ -125,6 +218,44 @@ def test_model_config_patch_updates_local_profiles():
     body = patched.json()
     assert body["profiles"]["fast"] == "google/gemini-2.5-flash"
     assert body["fallback_models"] == ["openrouter/auto"]
+
+
+def test_clear_all_data_requires_confirmation_and_removes_runtime_records(tmp_path):
+    cfg = SeldonConfig(data_dir=tmp_path)
+    cfg.ops.vector_index_path = tmp_path / "vector-index"
+    cfg.ops.vector_index_path.mkdir(parents=True)
+    (cfg.ops.vector_index_path / "index.json").write_text("{}")
+    engine = make_engine("sqlite:///:memory:")
+    create_all(engine)
+    client = TestClient(create_app(cfg, session_factory=make_session_factory(engine)))
+
+    scenario = client.post("/scenarios", json={"name": "Reset me", "target_question": "Reset?"}).json()
+    client.post("/kb/entries", json={"content": "Temporary context", "scenario_ids": [scenario["id"]]})
+    node = client.post("/graph/nodes", json={"name": "Temporary node", "type": "topic"}).json()
+    other_node = client.post("/graph/nodes", json={"name": "Temporary metric", "type": "metric"}).json()
+    client.post("/graph/edges", json={"source_node_id": node["id"], "target_node_id": other_node["id"], "relationship_type": "causes"})
+    client.post("/predictions", json={"scenario_id": scenario["id"], "statement": "Temporary prediction"})
+
+    rejected = client.request("DELETE", "/ops/data", json={"confirmation": "nope"})
+    assert rejected.status_code == 422
+
+    response = client.request("DELETE", "/ops/data", json={"confirmation": "CLEAR ALL DATA"})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["cleared"] is True
+    assert body["deleted"]["scenarios"] == 1
+    assert body["deleted"]["kb_entries"] == 1
+    assert body["deleted"]["erg_nodes"] == 2
+    assert body["deleted"]["erg_edges"] == 1
+    assert body["deleted"]["scenario_predictions"] == 1
+    assert body["vector_index_cleared"] is True
+    assert client.get("/scenarios").json() == []
+    assert client.get("/kb/search").json() == []
+    assert client.get("/graph/nodes").json() == []
+    assert client.get("/graph/edges").json() == []
+    assert client.get("/predictions").json() == []
+    assert not cfg.ops.vector_index_path.exists()
 
 
 def test_kb_explorer_filters_versions_contradictions_and_related_records():

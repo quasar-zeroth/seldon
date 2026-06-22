@@ -7,7 +7,11 @@ from typing import Any
 from seldon.data.models import Scenario
 from seldon.data.repositories import AuditRepository, KBRepository, SourceRepository
 
+from seldon.llm.openrouter import LLMAuthenticationError
+
 from .base import AgentBase, compact_terms
+from .extraction import _NODE_NAME_BLOCKLIST
+from .factor_discovery import FactorDiscovery, FactorDiscoveryInput
 from .retrieval import ExternalRetrievalProvider, normalize_document_text, query_variations, relevance_score
 from .contracts import (
     ContextGatheringInput,
@@ -28,13 +32,46 @@ Preserve provenance. Do not invent source URLs, dates, entities, or topics.
 Return only JSON matching the Observation schema."""
 
 
+# Generic/scaffolding words that are never useful domain topics. compact_terms()
+# only filters a tiny stoplist, so interrogatives and adverbs ("roughly", "now",
+# "would") leak through and used to become KB topics -> garbage ERG nodes. Reuse
+# the extraction node blocklist and extend it with question-scaffolding words.
+_GENERIC_TOPIC_TERMS = _NODE_NAME_BLOCKLIST | {
+    "roughly", "approximately", "around", "about", "now", "today", "currently",
+    "soon", "near", "future", "past", "recent", "rough", "estimate", "guess",
+    "value", "level", "amount", "number", "going", "happen", "happens",
+}
+
+
+def domain_terms(text: str, *, limit: int) -> list[str]:
+    """compact_terms() filtered to plausible domain nouns.
+
+    Drops stopwords/scaffolding (``_GENERIC_TOPIC_TERMS``), pure numbers, and
+    tokens that are a generic word with trailing digits (e.g. ``months6``). This
+    keeps the deterministic query-decomposition fallback from seeding stopword
+    topics when the LLM is unavailable.
+    """
+    terms: list[str] = []
+    for term in compact_terms(text, limit=limit * 3):
+        lowered = term.strip().lower()
+        if not lowered or len(lowered) < 3 or lowered.isdigit():
+            continue
+        if lowered in _GENERIC_TOPIC_TERMS or lowered.rstrip("0123456789") in _GENERIC_TOPIC_TERMS:
+            continue
+        if term not in terms:
+            terms.append(term)
+        if len(terms) >= limit:
+            break
+    return terms
+
+
 class QueryDecomposer(AgentBase[ContextGatheringInput, QueryPlan]):
     agent_id = "query_decomposer"
     model_profile = "fast"
 
     def _run(self, payload: ContextGatheringInput, *, run_id: str, parent_run_id: str | None) -> QueryPlan:
-        terms = compact_terms(f"{payload.question} {payload.timeframe}", limit=payload.max_subqueries)
-        primary = terms[0] if terms else payload.question[:80]
+        terms = domain_terms(f"{payload.question} {payload.timeframe}", limit=payload.max_subqueries)
+        primary = terms[0] if terms else (payload.question[:80].strip() or "scenario subject")
         subqueries = [
             Subquery(query=payload.question, topic=primary, rationale="Original scenario question"),
             Subquery(query=f"{payload.question} key drivers", topic=primary, rationale="Identify major drivers"),
@@ -46,7 +83,7 @@ class QueryDecomposer(AgentBase[ContextGatheringInput, QueryPlan]):
             primary_topic=primary,
             temporal_scope=payload.timeframe,
             subqueries=subqueries[: payload.max_subqueries],
-            topics=terms or [primary],
+            topics=terms,  # cleaned: never seed stopword topics into the KB
             entities=[t for t in terms if t[:1].isupper()],
         )
 
@@ -88,15 +125,19 @@ class InformationRetriever(AgentBase[QueryPlan, RetrievalResult]):
         collected.extend(self._retrieve_external(payload, run_id=run_id, seen=seen))
 
         if not collected:
+            # No KB matches and no external documents. Record a neutral, low-value
+            # marker -- NOT the scenario question dressed up as a fact -- and carry
+            # no topics, so stopwords from the question never enter the KB as
+            # "facts" and never seed garbage ERG nodes downstream.
             collected.append(
                 RetrievedSource(
                     source_type="scenario_brief",
-                    name="Scenario brief",
-                    content=f"Scenario question: {payload.subqueries[0].query if payload.subqueries else payload.primary_topic}. Temporal scope: {payload.temporal_scope or 'unspecified'}.",
-                    original_snippet=payload.subqueries[0].query if payload.subqueries else payload.primary_topic,
-                    topics=payload.topics,
-                    entities=payload.entities,
-                    confidence=0.4,
+                    name="No external sources retrieved",
+                    content="No external sources were retrieved for this scenario; downstream phases should rely on existing knowledge-base evidence.",
+                    original_snippet=None,
+                    topics=[],
+                    entities=[],
+                    confidence=0.2,
                 )
             )
         return RetrievalResult(query=payload.primary_topic, sources=collected)
@@ -105,16 +146,26 @@ class InformationRetriever(AgentBase[QueryPlan, RetrievalResult]):
         if not self.external_providers:
             return []
         sources = SourceRepository(self.db)
+        retrieval_cfg = self.config.retrieval
+        max_documents = retrieval_cfg.per_run_max_documents
         external: list[tuple[float, RetrievedSource]] = []
+        searched = 0
+        fetched = 0
+        usable = 0
         for subquery in payload.subqueries:
-            for variation in query_variations(subquery.query):
+            if usable >= max_documents:
+                break
+            for variation in query_variations(subquery.query, limit=retrieval_cfg.max_query_variations):
                 for provider in self.external_providers:
                     try:
-                        results = provider.search(variation, limit=5)
+                        results = provider.search(variation, limit=retrieval_cfg.per_subquery_limit)
                     except Exception as exc:
                         self.runs.add_message(run_id, "system", "External retrieval provider search failed.", payload={"provider": getattr(provider, "name", provider.__class__.__name__), "query": variation, "error": str(exc)})
                         continue
+                    searched += len(results)
                     for result in results:
+                        if usable >= max_documents:
+                            break
                         key = result.url or f"{provider.name}:{result.title}"
                         if key in seen:
                             continue
@@ -125,10 +176,12 @@ class InformationRetriever(AgentBase[QueryPlan, RetrievalResult]):
                             continue
                         if document is None:
                             continue
+                        fetched += 1
                         content = normalize_document_text(document.content)
                         if not content:
                             continue
                         seen.add(key)
+                        usable += 1
                         rank = relevance_score(variation, document)
                         source_row = sources.create(
                             source_type=document.source_type,
@@ -162,6 +215,14 @@ class InformationRetriever(AgentBase[QueryPlan, RetrievalResult]):
                                 ),
                             )
                         )
+        # One high-signal summary so silent zero-document runs are diagnosable:
+        # search succeeding while fetch yields nothing is the common failure mode.
+        self.runs.add_message(
+            run_id,
+            "system",
+            f"External retrieval summary: {searched} results searched -> {fetched} fetched -> {usable} usable documents.",
+            payload={"searched": searched, "fetched": fetched, "usable": usable, "providers": [getattr(p, "name", p.__class__.__name__) for p in self.external_providers]},
+        )
         external.sort(key=lambda item: item[0], reverse=True)
         return [source for _rank, source in external]
 
@@ -194,7 +255,11 @@ class InformationSummarizer(AgentBase[RetrievalResult, Observation]):
                     escalation_profiles=("balanced",),
                 )
                 return Observation.model_validate(result)
+            except LLMAuthenticationError:
+                raise
             except Exception as exc:
+                if not self.config.agents.allow_deterministic_dev_fallback:
+                    raise
                 self.runs.add_message(run_id, "system", "InformationSummarizer LLM path failed; using deterministic fallback.", payload={"error": str(exc)})
 
         source = payload.sources[0]
@@ -329,8 +394,30 @@ class ContextGatheringCoordinator(AgentBase[ContextGatheringInput, ContextGather
 
     def _run(self, payload: ContextGatheringInput, *, run_id: str, parent_run_id: str | None) -> ContextGatheringOutput:
         child_run_ids: list[str] = []
-        q_run, plan = QueryDecomposer(self.db, config=self.config, llm_client=self.llm_client).run(payload, parent_run_id=run_id)
-        child_run_ids.append(q_run)
+
+        # FactorDiscovery: ask the LLM to identify the drivers behind the scenario
+        # and emit a description + per-driver subqueries. Falls back to a minimal
+        # plan if the LLM is unavailable.
+        factor_agent = FactorDiscovery(self.db, config=self.config, llm_client=self.llm_client)
+        f_run, factors = factor_agent.run(
+            FactorDiscoveryInput(
+                scenario_id=payload.scenario_id,
+                question=payload.question,
+                timeframe=payload.timeframe,
+                max_subqueries=payload.max_subqueries,
+            ),
+            parent_run_id=run_id,
+        )
+        child_run_ids.append(f_run)
+
+        # Use FactorDiscovery's subqueries as the primary plan. QueryDecomposer
+        # still runs to surface additional heuristic angles (e.g., contradiction
+        # and risk subqueries), but the factor-driven plan leads.
+        if factors.subqueries:
+            plan = factor_agent.to_query_plan(factors, timeframe=payload.timeframe)
+        else:
+            q_run, plan = QueryDecomposer(self.db, config=self.config, llm_client=self.llm_client).run(payload, parent_run_id=run_id)
+            child_run_ids.append(q_run)
 
         r_run, retrieval = InformationRetriever(self.db, config=self.config, llm_client=self.llm_client, external_providers=self.external_retrieval_providers).run(plan, parent_run_id=run_id)
         child_run_ids.append(r_run)
@@ -354,7 +441,16 @@ class ContextGatheringCoordinator(AgentBase[ContextGatheringInput, ContextGather
 
         observations: list[Observation] = []
         for source in retrieval.sources:
-            s_run, observation = InformationSummarizer(self.db, config=self.config, llm_client=self.llm_client).run(RetrievalResult(query=retrieval.query, sources=[source]), parent_run_id=run_id)
+            try:
+                s_run, observation = InformationSummarizer(self.db, config=self.config, llm_client=self.llm_client).run(RetrievalResult(query=retrieval.query, sources=[source]), parent_run_id=run_id)
+            except LLMAuthenticationError:
+                # Account-wide auth failure: propagate so the job queue pauses
+                # instead of silently discarding every fetched document.
+                raise
+            except Exception as exc:
+                # One bad source must not throw away the rest of the batch.
+                self.runs.add_message(run_id, "system", "Summarizer failed for a source; skipping it.", payload={"source": source.url or source.name, "error": str(exc)})
+                continue
             child_run_ids.append(s_run)
             observations.append(observation)
 

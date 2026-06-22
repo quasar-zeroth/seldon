@@ -1,33 +1,22 @@
 from __future__ import annotations
 
 import os
-from pathlib import Path
 
 import pytest
 
+from seldon.config import load_env_file
 
-def _load_project_dotenv() -> None:
-    """Load simple KEY=VALUE pairs from the project .env for local tests.
+# Pytest does not load .env by default; reuse the production loader so live
+# provider tests pick up keys while preserving real-environment precedence.
+load_env_file()
 
-    Pytest does not load .env files by default. This keeps live OpenRouter tests
-    convenient while preserving normal environment precedence and avoiding any
-    dependency on python-dotenv.
-    """
-    env_path = Path(__file__).resolve().parents[1] / ".env"
-    if not env_path.exists():
-        return
-    for line in env_path.read_text().splitlines():
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#") or "=" not in stripped:
-            continue
-        key, value = stripped.split("=", 1)
-        key = key.strip()
-        value = value.strip().strip('"').strip("'")
-        if key and not os.getenv(key):
-            os.environ[key] = value
-
-
-_load_project_dotenv()
+# Tests run against the real schema and a real (or stub) LLM client. The default
+# production behavior is to raise when the LLM fails so misconfigurations surface
+# visibly. For unit tests that exercise heuristic paths without a usable LLM, keep
+# the deterministic dev-mode fallback on and skip the boot-time model healthcheck
+# so the test suite doesn't burn OpenRouter rate limits.
+os.environ.setdefault("SELDON_ALLOW_DEV_FALLBACK", "1")
+os.environ.setdefault("SELDON_SKIP_LLM_HEALTHCHECK", "1")
 
 
 @pytest.fixture()

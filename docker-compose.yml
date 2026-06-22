@@ -3,7 +3,9 @@ services:
     build: .
     command: sh -c "seldon migrate && uvicorn seldon.api.app:app --host 0.0.0.0 --port 8000"
     environment:
+      NVIDIA_API_KEY: ${NVIDIA_API_KEY:-}
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      SELDON_LLM_PROVIDER: ${SELDON_LLM_PROVIDER:-}
       SELDON_API_KEY: ${SELDON_API_KEY:-}
       SELDON_REQUIRE_API_KEY: ${SELDON_REQUIRE_API_KEY:-true}
       SELDON_ALLOW_LOCALHOST_WITHOUT_API_KEY: ${SELDON_ALLOW_LOCALHOST_WITHOUT_API_KEY:-false}

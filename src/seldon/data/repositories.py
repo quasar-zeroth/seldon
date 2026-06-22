@@ -6,7 +6,7 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Generic, TypeVar
 
-from sqlalchemy import select, text
+from sqlalchemy import inspect, select, text
 from sqlalchemy.orm import Session
 import networkx as nx
 
@@ -118,7 +118,7 @@ class KBRepository(BaseRepository[KBEntry]):
 
     def __init__(self, session: Session, audit: AuditRepository | None = None, *, embedding_provider: EmbeddingProvider | None = None):
         super().__init__(session, audit=audit)
-        self.embedding_provider = embedding_provider or LocalHashEmbeddingProvider()
+        self.embedding_provider = embedding_provider or LocalHashEmbeddingProvider(dims=1536 if session.bind is not None and session.bind.dialect.name == "postgresql" else 64)
 
     def _embed_values(self, values: dict[str, Any]) -> None:
         if values.get("content") and not values.get("content_embedding"):
@@ -128,7 +128,7 @@ class KBRepository(BaseRepository[KBEntry]):
             values.setdefault("vector_index_pointer", f"kb:{values.get('source_url') or values['content'][:32]}")
 
     def _sync_pgvector_column(self, row: KBEntry) -> None:
-        if self.session.bind is None or self.session.bind.dialect.name != "postgresql" or not row.content_embedding:
+        if self.session.bind is None or self.session.bind.dialect.name != "postgresql" or not row.content_embedding or not self._has_pgvector_column():
             return
         self.session.execute(
             text("UPDATE kb_entries SET content_embedding_vector = CAST(:embedding AS vector) WHERE id = :id"),
@@ -203,13 +203,21 @@ class KBRepository(BaseRepository[KBEntry]):
 
     def semantic_search(self, query: str, *, limit: int = 10) -> list[KBEntry]:
         query_embedding = self.embedding_provider.embed(query).vector
-        if self.session.bind is not None and self.session.bind.dialect.name == "postgresql":
+        if self.session.bind is not None and self.session.bind.dialect.name == "postgresql" and self._has_pgvector_column():
             rows = self._semantic_search_pgvector(query_embedding, limit=limit)
             if rows:
                 return rows
         rows = list(self.session.scalars(select(KBEntry)))
         ranked = sorted(rows, key=lambda entry: (cosine_similarity(query_embedding, entry.content_embedding), query.lower() in entry.content.lower()), reverse=True)
         return ranked[:limit]
+
+    def _has_pgvector_column(self) -> bool:
+        if self.session.bind is None:
+            return False
+        try:
+            return "content_embedding_vector" in {column["name"] for column in inspect(self.session.bind).get_columns("kb_entries")}
+        except Exception:
+            return False
 
     def _semantic_search_pgvector(self, query_embedding: list[float], *, limit: int) -> list[KBEntry]:
         try:

@@ -19,6 +19,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
 from seldon.data.models import OpsJob
+from seldon.llm.openrouter import LLMAuthenticationError
 
 
 def _now() -> datetime:
@@ -103,6 +104,32 @@ class InProcessJobQueue:
         self._session_factory = session_factory
         self._worker_id = worker_id or f"seldon-worker-{uuid4()}"
         self._lease_seconds = lease_seconds
+        self._paused: bool = False
+        self._pause_reason: str | None = None
+        self._paused_at: datetime | None = None
+
+    def pause(self, reason: str) -> None:
+        """Pause job processing. Currently-running jobs finish; queued jobs wait."""
+        with self._lock:
+            self._paused = True
+            self._pause_reason = reason
+            self._paused_at = _now()
+
+    def resume(self) -> None:
+        with self._lock:
+            self._paused = False
+            self._pause_reason = None
+            self._paused_at = None
+
+    def status(self) -> dict[str, Any]:
+        with self._lock:
+            return {
+                "paused": self._paused,
+                "pause_reason": self._pause_reason,
+                "paused_at": _json_dt(self._paused_at),
+                "worker_id": self._worker_id,
+                "queue_depth": self._queue.qsize(),
+            }
 
     def register(self, kind: str, handler: JobHandler) -> None:
         self._handlers[kind] = handler
@@ -198,28 +225,58 @@ class InProcessJobQueue:
 
     def _run(self) -> None:
         while not self._stop.is_set():
+            if self._paused:
+                # Hold the worker idle while paused; the queue retains its items.
+                # Operator must call resume() (typically via /ops/queue) to continue.
+                self._stop.wait(timeout=0.5)
+                continue
             try:
                 job_id = self._queue.get(timeout=0.1)
             except Empty:
                 continue
-            job = self.get(job_id)
-            if job is not None:
-                self._execute(job)
-            self._queue.task_done()
+            try:
+                job = self.get(job_id)
+                if job is not None:
+                    self._execute(job)
+            finally:
+                self._queue.task_done()
 
     def _execute(self, job: JobRecord) -> None:
         handler = self._handlers[job.kind]
         lease = _now() + timedelta(seconds=self._lease_seconds)
-        job = self._mark(job, status="running", started_at=job.started_at or _now(), error=None, lease_owner=self._worker_id, lease_expires_at=lease, attempt_count=job.attempt_count + 1)
+        try:
+            job = self._mark(job, status="running", started_at=job.started_at or _now(), error=None, lease_owner=self._worker_id, lease_expires_at=lease, attempt_count=job.attempt_count + 1)
+        except KeyError:
+            return
         try:
             result = handler(job.payload) or {}
+        except LLMAuthenticationError as exc:
+            # Auth failures are account-wide — pause the queue so the operator can
+            # fix OPENROUTER_API_KEY without burning every queued scenario through
+            # the same broken credential. The current job is marked failed (no retry
+            # because retries would all hit the same auth wall).
+            try:
+                self._mark(job, status="failed", error=f"LLM authentication failed: {exc}", lease_owner=None, lease_expires_at=None, completed_at=_now())
+            except KeyError:
+                pass
+            self.pause(f"llm_auth_failed: {exc}")
+            return
         except Exception as exc:  # pragma: no cover - defensive state capture
-            status = "queued" if job.attempt_count < job.max_attempts else "failed"
-            marked = self._mark(job, status=status, error=str(exc), lease_owner=None, lease_expires_at=None, completed_at=_now() if status == "failed" else None)
+            # Some errors are deterministic (e.g. insufficient graph nodes): retrying
+            # can't help, so fail immediately when the exception opts out of retries.
+            no_retry = getattr(exc, "no_retry", False)
+            status = "failed" if no_retry or job.attempt_count >= job.max_attempts else "queued"
+            try:
+                marked = self._mark(job, status=status, error=str(exc), lease_owner=None, lease_expires_at=None, completed_at=_now() if status == "failed" else None)
+            except KeyError:
+                return
             if status == "queued":
                 self._queue.put(marked.id)
             return
-        self._mark(job, status="completed", completed_at=_now(), result=result, error=None, lease_owner=None, lease_expires_at=None)
+        try:
+            self._mark(job, status="completed", completed_at=_now(), result=result, error=None, lease_owner=None, lease_expires_at=None)
+        except KeyError:
+            return
 
     def _mark(self, job: JobRecord, **values: Any) -> JobRecord:
         if self._session_factory is not None:

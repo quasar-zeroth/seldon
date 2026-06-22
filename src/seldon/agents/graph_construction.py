@@ -18,6 +18,7 @@ from sqlalchemy import select
 
 from seldon.data.models import ERGEdge, ERGNode, KBEntry, Scenario
 from seldon.data.repositories import AuditRepository, GraphRepository, KBRepository
+from seldon.llm.openrouter import LLMAuthenticationError
 
 from .base import AgentBase
 from .context_gathering import ContextGatheringCoordinator
@@ -33,7 +34,7 @@ class GraphConstructionInput(BaseModel):
     timeframe: str = ""
     max_candidate_pairs: int = Field(default=40, ge=1, le=500)
     min_evidence_overlap: int = Field(default=1, ge=0, le=20)
-    min_confidence_to_write: float = Field(default=0.35, ge=0.0, le=1.0)
+    min_confidence_to_write: float = Field(default=0.5, ge=0.0, le=1.0)
 
 
 class NodePairCandidate(BaseModel):
@@ -176,7 +177,11 @@ class PairwiseRelationshipDetector(AgentBase[NodePairCandidate, RelationshipCand
                         "scenario_ids": sorted({*candidate.scenario_ids, *scenario_ids}),
                     }
                 )
+            except LLMAuthenticationError:
+                raise
             except Exception as exc:
+                if not self.config.agents.allow_deterministic_dev_fallback:
+                    raise
                 self.runs.add_message(run_id, "system", "PairwiseRelationshipDetector LLM path failed; using deterministic fallback.", payload={"error": str(exc)})
 
         text = _entry_text(entries)
@@ -247,8 +252,49 @@ class GraphConsistencyChecker(AgentBase[dict[str, Any], BaseModel]):  # type: ig
         raise NotImplementedError
 
     def _check(self, scenario_id: str) -> list[ConsistencyIssue]:
-        edges = [edge for edge in GraphRepository(self.db).list_edges() if scenario_id in (edge.scenario_ids or [])]
+        import networkx as nx  # already a hard dep (pyproject.toml)
+
+        graph_repo = GraphRepository(self.db)
+        nodes = [n for n in graph_repo.list_nodes() if scenario_id in (n.scenario_ids or [])]
+        edges = [edge for edge in graph_repo.list_edges() if scenario_id in (edge.scenario_ids or [])]
         issues: list[ConsistencyIssue] = []
+
+        # Disconnected-subgraph detection: every non-isolated node should be in
+        # the same weakly connected component as the scenario subject.
+        # Surface islands (components > 1 node that don't connect to the main
+        # graph) and orphan nodes (no edges at all).
+        if nodes:
+            g = nx.DiGraph()
+            for n in nodes:
+                g.add_node(n.id)
+            for e in edges:
+                if e.source_node_id in g and e.target_node_id in g:
+                    g.add_edge(e.source_node_id, e.target_node_id)
+            components = sorted(nx.weakly_connected_components(g), key=len, reverse=True)
+            if len(components) > 1:
+                main_component = components[0]
+                for island in components[1:]:
+                    island_node_ids = list(island)
+                    if len(island_node_ids) == 1:
+                        # Single-node island = orphan, only flag if it has some KB support
+                        node_id = island_node_ids[0]
+                        node = next((n for n in nodes if n.id == node_id), None)
+                        if node and node.kb_entry_ids:
+                            issues.append(ConsistencyIssue(
+                                issue_type="duplicate_edge",  # reuse existing type to avoid schema churn
+                                node_ids=island_node_ids,
+                                severity="low",
+                                message=f"Orphan node '{node.name}' has no relationships to the rest of the graph",
+                                suggested_action="extract relationships in next graph construction pass",
+                            ))
+                    else:
+                        issues.append(ConsistencyIssue(
+                            issue_type="duplicate_edge",  # reuse existing type
+                            node_ids=island_node_ids,
+                            severity="medium",
+                            message=f"Disconnected subgraph of {len(island_node_ids)} nodes is isolated from the main component ({len(main_component)} nodes)",
+                            suggested_action="run another graph construction iteration with relaxed evidence overlap",
+                        ))
         seen: dict[tuple[str, str, str], str] = {}
         by_pair: dict[tuple[str, str], list[ERGEdge]] = defaultdict(list)
         for edge in edges:
@@ -358,7 +404,7 @@ class GraphConstructionCoordinator(AgentBase[GraphConstructionInput, GraphConstr
     model_profile = "balanced"
 
     @classmethod
-    def input_from_scenario(cls, scenario: Scenario, *, max_candidate_pairs: int = 40, min_confidence_to_write: float = 0.35) -> GraphConstructionInput:
+    def input_from_scenario(cls, scenario: Scenario, *, max_candidate_pairs: int = 40, min_confidence_to_write: float = 0.5) -> GraphConstructionInput:
         return GraphConstructionInput(scenario_id=scenario.id, question=scenario.target_question, timeframe=scenario.time_horizon, max_candidate_pairs=max_candidate_pairs, min_confidence_to_write=min_confidence_to_write)
 
     def _run(self, payload: GraphConstructionInput, *, run_id: str, parent_run_id: str | None) -> GraphConstructionOutput:
@@ -376,6 +422,13 @@ class GraphConstructionCoordinator(AgentBase[GraphConstructionInput, GraphConstr
         for candidate in candidates:
             if candidate.confidence < payload.min_confidence_to_write:
                 continue
+            # Edges without shared KB evidence are only allowed if the LLM
+            # explicitly described a non-trivial mechanism. Without one, an
+            # edge with no evidence is just a guess.
+            if not candidate.evidence_kb_ids:
+                mechanism = (candidate.description or "").strip()
+                if len(mechanism) < 40:
+                    continue
             existing = self._find_existing_edge(candidate)
             values = candidate.model_dump(mode="json")
             if existing:
@@ -441,6 +494,10 @@ class ConvergenceLoopCoordinator(AgentBase[ConvergenceLoopInput, ConvergenceLoop
     phase = "convergence"
     model_profile = "balanced"
 
+    def __init__(self, *args: Any, external_retrieval_providers: list[Any] | None = None, **kwargs: Any):
+        super().__init__(*args, **kwargs)
+        self.external_retrieval_providers = external_retrieval_providers or []
+
     def _run(self, payload: ConvergenceLoopInput, *, run_id: str, parent_run_id: str | None) -> ConvergenceLoopOutput:
         scenario = self.db.get(Scenario, payload.scenario_id)
         if scenario is None:
@@ -450,7 +507,12 @@ class ConvergenceLoopCoordinator(AgentBase[ConvergenceLoopInput, ConvergenceLoop
         final_graph: GraphConstructionOutput | None = None
         previous_total = 0
         for iteration in range(1, payload.max_iterations + 1):
-            c_run, context = ContextGatheringCoordinator(self.db, config=self.config, llm_client=self.llm_client).run(ContextGatheringCoordinator.input_from_scenario(scenario), parent_run_id=run_id)
+            c_run, context = ContextGatheringCoordinator(
+                self.db,
+                config=self.config,
+                llm_client=self.llm_client,
+                external_retrieval_providers=self.external_retrieval_providers,
+            ).run(ContextGatheringCoordinator.input_from_scenario(scenario), parent_run_id=run_id)
             child_run_ids.append(c_run)
             e_run, extraction = ExtractionCoordinator(self.db, config=self.config, llm_client=self.llm_client).run(ExtractionCoordinator.input_from_scenario(scenario), parent_run_id=run_id)
             child_run_ids.append(e_run)

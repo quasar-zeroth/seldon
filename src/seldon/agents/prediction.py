@@ -12,14 +12,37 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import select
 
-from seldon.data.models import BaseRateEvidence, ERGEdge, ERGNode, Scenario, ScenarioPrediction, ScenarioVersion
+from seldon.data.models import BaseRateEvidence, ERGEdge, ERGNode, KBEntry, Scenario, ScenarioPrediction, ScenarioVersion
 from seldon.data.repositories import AuditRepository, GraphRepository, MarkdownExporter, ScenarioRepository
+from seldon.llm.openrouter import LLMAuthenticationError
 
 from .advanced import AdversarialRedTeamAgent, AdvancedIntelligenceInput, RedTeamOutput
 from .base import AgentBase
+from .extraction import _NODE_NAME_BLOCKLIST, _canonical
 
 ForecastDirection = Literal["up", "down", "flat", "uncertain"]
 StabilityLabel = Literal["stable", "moderately_stable", "unstable"]
+
+
+class InsufficientGraphNodesError(RuntimeError):
+    """Raised when a scenario graph has too few valid domain nodes to forecast over.
+
+    Carries ``no_retry`` so the job queue fails the job immediately rather than
+    retrying a deterministic condition (the graph won't change between attempts).
+    """
+
+    no_retry = True
+
+
+def is_valid_domain_node(node: ERGNode) -> bool:
+    """True if a node is a real domain entity rather than a stopword/scaffolding node."""
+    canonical = _canonical(node.name or "")
+    if not canonical:
+        return False
+    tokens = canonical.split()
+    if len(tokens) == 1 and tokens[0] in _NODE_NAME_BLOCKLIST:
+        return False
+    return True
 
 
 class PredictionInput(BaseModel):
@@ -30,6 +53,7 @@ class PredictionInput(BaseModel):
     min_confidence_to_activate: float = Field(default=0.35, ge=0.0, le=1.0)
     require_red_team_proceed: bool = True
     export_markdown: bool = True
+    min_graph_nodes: int = Field(default=1, ge=0, le=50)  # block forecasting an empty/garbage graph
 
 
 class NodeStateForecast(BaseModel):
@@ -202,6 +226,25 @@ Probabilities must sum to 1.0, confidence must reflect evidence quality, and ass
 Do not force bull/base/bear labels unless they are the best natural scenario names. Return only JSON matching the ScenarioSynthesisOutput schema."""
 
 
+NODE_STATE_PREDICTOR_SYSTEM = """You are The Seldon Project's Node State Predictor.
+
+Forecast the future state of ONE node over the supplied time horizon using its
+own KB evidence and the relationships flowing into it.
+
+Rules:
+- Ground the forecast in the supplied evidence; do not invent facts.
+- direction must be one of: "up", "down", "flat", "uncertain".
+- confidence in [0.0, 1.0] reflects evidence quality and convergence.
+- The "forecast" field should be a 1-2 sentence projection that names the
+  drivers and the expected level/direction.
+- drivers: list 2-5 edge IDs from the incoming-edges list that most shape
+  this forecast.
+
+Return STRICT JSON: {"node_id":..., "node_name":..., "forecast": "...",
+"direction": "up|down|flat|uncertain", "confidence": 0.0-1.0,
+"time_horizon": "...", "drivers": ["edge_id", ...]}."""
+
+
 class NodeStatePredictor(AgentBase[NodeForecastInput, NodeStateForecast]):
     agent_id = "node_state_predictor"
     phase = "prediction"
@@ -213,6 +256,64 @@ class NodeStatePredictor(AgentBase[NodeForecastInput, NodeStateForecast]):
         if node is None:
             raise KeyError(f"erg_node not found: {payload.node_id}")
         edges = [edge for edge in graph.list_edges(node_id=node.id) if payload.scenario_id in (edge.scenario_ids or [])]
+        incoming = [edge for edge in edges if edge.target_node_id == node.id]
+
+        # LLM-first path: use the node's own KB entries to ground a forecast.
+        if self.llm_client is not None:
+            try:
+                kb_entries: list[KBEntry] = []
+                for kb_id in (node.kb_entry_ids or [])[:15]:
+                    entry = self.db.get(KBEntry, kb_id)
+                    if entry is not None:
+                        kb_entries.append(entry)
+                evidence_block = (
+                    "\n".join(
+                        f"- id={entry.id} | source={entry.source_name} | {(entry.content or '')[:500]}"
+                        for entry in kb_entries
+                    )
+                    if kb_entries
+                    else "(no KB evidence attached to this node)"
+                )
+                incoming_block = "\n".join(
+                    f"- edge_id={edge.id} | from_node={edge.source_node_id} | {edge.relationship_type} | "
+                    f"direction={edge.direction} | strength={edge.strength:.2f} | confidence={edge.confidence:.2f} | "
+                    f"{(edge.description or '')[:200]}"
+                    for edge in incoming[:10]
+                ) or "(no incoming edges)"
+                result = self.llm_complete_json(
+                    [
+                        {
+                            "role": "user",
+                            "content": (
+                                f"Forecast node:\n"
+                                f"  node_id: {node.id}\n"
+                                f"  node_name: {node.name}\n"
+                                f"  node_type: {node.type}\n"
+                                f"  current_state: {(node.current_state or node.description or '')[:300]}\n"
+                                f"  time_horizon: {payload.time_horizon or 'the scenario horizon'}\n\n"
+                                f"Incoming edges (potential drivers):\n{incoming_block}\n\n"
+                                f"Evidence (this node's KB entries):\n{evidence_block}"
+                            ),
+                        }
+                    ],
+                    run_id=run_id,
+                    system=NODE_STATE_PREDICTOR_SYSTEM,
+                    schema=NodeStateForecast,
+                    repair_retries=1,
+                    escalation_profiles=("balanced",),
+                )
+                forecast = NodeStateForecast.model_validate(result)
+                # Normalize identity fields back to authoritative values to prevent the
+                # model from hallucinating a different node_id.
+                return forecast.model_copy(update={"node_id": node.id, "node_name": node.name, "time_horizon": payload.time_horizon or forecast.time_horizon})
+            except LLMAuthenticationError:
+                raise
+            except Exception as exc:
+                if not self.config.agents.allow_deterministic_dev_fallback:
+                    raise
+                self.runs.add_message(run_id, "system", "NodeStatePredictor LLM path failed; using deterministic fallback.", payload={"error": str(exc)})
+
+        # Deterministic dev-mode fallback (must be explicitly enabled in config)
         evidence_count = len(node.kb_entry_ids or [])
         confidence = _clamp(0.35 + 0.25 * node.importance_score + 0.08 * evidence_count + 0.05 * len(edges))
         signal = sum(_signed_direction(edge.direction, edge.relationship_type) * edge.strength * edge.confidence for edge in edges)
@@ -401,7 +502,11 @@ class ScenarioSynthesizer(AgentBase[ScenarioSynthesisInput, ScenarioSynthesisOut
                     escalation_profiles=("reasoning",),
                 )
                 return ScenarioSynthesisOutput.model_validate(result)
+            except LLMAuthenticationError:
+                raise
             except Exception as exc:
+                if not self.config.agents.allow_deterministic_dev_fallback:
+                    raise
                 self.runs.add_message(run_id, "system", "ScenarioSynthesizer LLM path failed; using deterministic fallback.", payload={"error": str(exc)})
 
         signal = payload.traversal.aggregate_signal
@@ -464,7 +569,16 @@ class PredictionCoordinator(AgentBase[PredictionInput, PredictionOutput]):
         scenario = self.db.get(Scenario, payload.scenario_id)
         if scenario is None:
             raise KeyError(f"scenario not found: {payload.scenario_id}")
-        nodes = [node for node in GraphRepository(self.db).list_nodes() if payload.scenario_id in (node.scenario_ids or [])]
+        scenario_nodes = [node for node in GraphRepository(self.db).list_nodes() if payload.scenario_id in (node.scenario_ids or [])]
+        # Only forecast over real domain nodes — never stopword/scaffolding nodes.
+        nodes = [node for node in scenario_nodes if is_valid_domain_node(node)]
+        if len(nodes) < payload.min_graph_nodes:
+            raise InsufficientGraphNodesError(
+                f"insufficient_valid_graph_nodes: scenario {payload.scenario_id} has "
+                f"{len(nodes)} valid domain node(s) (of {len(scenario_nodes)} total); "
+                f"need >= {payload.min_graph_nodes}. Run context-gathering/extraction/graph "
+                f"construction to build the graph before predicting."
+            )
         nodes.sort(key=lambda node: (node.importance_score, len(node.kb_entry_ids or [])), reverse=True)
         driver_nodes = nodes[: payload.max_driver_nodes]
         child_run_ids: list[str] = []

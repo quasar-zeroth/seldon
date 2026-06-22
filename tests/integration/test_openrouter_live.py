@@ -56,17 +56,19 @@ def test_live_openrouter_complete_json_uses_default_and_fallback_models():
         schema=SmokeResponse,
         response_format=None,
         temperature=0,
-        max_tokens=120,
+        max_tokens=2048,  # reasoning models need headroom for chain-of-thought tokens
         max_retries=1,
     )
 
     assert result["ok"] is True
     assert result["label"] == "openrouter-live"
-    assert client.config.default_model == "tencent/hy3-preview:free"
+    assert client.config.default_model == "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free"
+    assert client.config.fast_model == "deepseek/deepseek-v4-flash:free"
+    assert client.config.reasoning_model == "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free"
     assert client.config.fallback_models == [
-        "openrouter/owl-alpha",
-        "minimax/minimax-m2.5:free",
-        "nvidia/nemotron-3-super-120b-a12b:free",
+        "deepseek/deepseek-v4-flash:free",
+        "poolside/laguna-m.1:free",
+        "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
     ]
 
 
