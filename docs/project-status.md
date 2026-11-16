@@ -1,0 +1,78 @@
+# Project status and remaining work
+
+Reviewed against the working tree on 2026-11-16, including existing uncommitted implementation. This is a code-backed inventory, not a claim about a deployed service, current provider availability, or forecast accuracy. The separate Parallax checkout was not audited. Actual implementation, schemas, migrations, CLI help, and tests remain authoritative. Start with the [root lookup table](../AGENTS.md) and [glossary](../GLOSSARY.md).
+
+## Architecture in use
+
+Seldon has three important boundaries:
+
+1. **Database-backed forecasting:** SQLAlchemy repositories own scenarios, evidence, ERG nodes/edges, predictions, versions, runs, and audits. FastAPI, the operating console, and specialist coordinators consume that state.
+2. **External-agent research:** the workspace accepts research authored by an existing agent, validates it, and persists it in the same database without invoking a model. Shared entity identity, question-specific upstream scope, and immutable historical context allow knowledge reuse without rewriting old forecasts.
+3. **Legacy compatibility:** `SeldonClient`, `KnowledgeGraph`, and `PredictionEngine` retain a file-backed API. Those JSON artifacts are distinct from the relational scenario engine.
+
+The broad pipeline is evidence gathering → extraction → relationships/convergence → scoped prediction/review → saved forecast → outcome feedback. These stages can describe either built-in agent runs or submitted external work; recorded stage history is not itself an autonomous scheduler. See [backend ownership](../src/seldon/AGENTS.md) and [workspace pipeline](../src/seldon/workspace/pipeline.py).
+
+## Supported now
+
+| Capability | Current behavior and implementation evidence |
+| --- | --- |
+| Persistence and auditability | SQLite and PostgreSQL engine support; evidence versions, contradictions, scenarios, ERG, predictions, runs/messages/model calls, audit records and migrations. [Data map](../src/seldon/data/AGENTS.md), [migration map](../alembic/AGENTS.md). |
+| Provider-free research | Start/export/apply via CLI or HTTP; dated evidence versus assumptions; revisions, exact replay, rollback, causal DAG validation, research-stop declarations, node assessments, forecast probabilities and review gates. [Workspace service](../src/seldon/workspace/service.py), [contracts](../src/seldon/workspace/schemas.py). |
+| Shared knowledge and forecast history | Search/reuse canonical UUIDs and tags, explicit shared edits and detachments, target/depth scope, frozen context, stale-knowledge indicators, pending/completed rerun handoffs and combined prediction histories. [Knowledge](../src/seldon/workspace/knowledge.py), [reruns](../src/seldon/workspace/reruns.py). |
+| Reports and exports | Saved immutable summary/detailed research bundles with attachments; workspace Markdown/JSON; separate scenario Markdown/JSON/HTML exports. Reports summarize stored work. [Reports](../src/seldon/workspace/reports.py), [API](../src/seldon/api/app.py). |
+| Topic/source provenance | Attributed claims, disagreement and supersession, scoped trust/leaning assessments, ownership/affiliation/document attribution, conservative evidence indexing and explained entity/evidence/topic/claim/source paths. [Perspectives map](../src/seldon/workspace/perspectives/AGENTS.md), [workflow](topic-source-graphs.md). |
+| Model execution | Configurable OpenRouter-compatible/NVIDIA presets, structured responses, retry/fallback, invocation audit, specialist configuration, repair and escalation helpers. Provider-backed execution is configured separately from the external workspace; failure behavior varies by specialist. [LLM adapter](../src/seldon/llm/openrouter.py), [agent base](../src/seldon/agents/base.py), [configuration](../src/seldon/config.py). |
+| Research and graph construction | Search/news adapters, document ingestion, summarization and KB deltas; entity/event/topic extraction and resolution; relationship proposals, consistency, importance and bounded factor discovery. [Agents map](../src/seldon/agents/AGENTS.md), [retrieval](../src/seldon/agents/retrieval.py). |
+| Prediction and feedback | Node forecasts, multi-hop traversal, synthesis, pre-synthesis priors and adversarial activation review; supplied-outcome resolution, root-cause analysis, corrections and calibration; shared-graph/cross-scenario analysis. Some components remain heuristic as described below. [Prediction](../src/seldon/agents/prediction.py), [feedback](../src/seldon/agents/feedback.py), [advanced analysis](../src/seldon/agents/advanced.py). |
+| Embeddings and graph algorithms | Local hash embeddings, an opt-in remote embedding adapter, vector rebuild operations, PostgreSQL vector migration/query paths, and NetworkX views over persisted ERG data. [Vector helpers](../src/seldon/kb/vector.py), [repositories](../src/seldon/data/repositories.py). |
+| Operating console | Dashboard, conversational scenario creation, scenario/job controls, evidence search/editing, graph editing/snapshots/merge inbox, run details/retry, charts, feedback and model settings. [Console map](../apps/web/AGENTS.md). |
+| Operations | CLI migrations/health/seed/backup/restore/vector operations; durable local job records and recovery, retries and authentication-failure queue pause; API-key enforcement, structured logs, basic metrics and SSE endpoints; Docker startup migrations and PostgreSQL health dependency. [Operations map](../src/seldon/ops/AGENTS.md), [CLI](../src/seldon/cli.py), [Compose](../docker-compose.yml). |
+
+## Concrete remaining work
+
+These are observed limitations and candidate follow-ups, not newly assigned implementation work. Their order is thematic, not a committed delivery schedule.
+
+### Forecast quality and feedback automation
+
+- **Empirical base rates and validated advanced analysis.** `PredictionBaseRateAnchorer` averages stored prediction probabilities or uses a neutral prior. The later `BaseRateAnchorer` copies the current forecast distribution and explicitly defers external historical-series ingestion. `HistoricalAnalogyMatcher` selects scenario KB material; `ExpertPerspectiveSimulator` produces fixed archetype templates. Connect suitable historical/outcome data and evaluate these methods before presenting them as empirical frequencies or validated expert simulation. See [prediction.py](../src/seldon/agents/prediction.py) and [advanced.py](../src/seldon/agents/advanced.py).
+- **Autonomous outcome and assumption monitoring.** `OutcomeMonitor` consumes supplied actual outcomes. Feedback can apply corrections and invalidate matching assumptions, and the console can explicitly enqueue a fresh prediction; periodic ground-truth acquisition, ongoing assumption checks and automatic dependency-driven reruns are not a complete service. External workspace reruns deliberately wait for an executing agent. See [feedback.py](../src/seldon/agents/feedback.py), [reruns.py](../src/seldon/workspace/reruns.py), and [calibration actions](../apps/web/app/calibration/page.tsx).
+- **Forecast-performance evidence.** Structural/provenance gates and calibration calculations exist, but tests and the frozen gold replay do not establish real-world calibration, causal correctness or predictive advantage. A dated evaluation corpus, outcome attribution and empirical performance review remain necessary to support such claims. See [feedback metrics](../src/seldon/agents/feedback.py) and [gold example](../examples/gold/README.md).
+
+### Runtime and production operation
+
+- **Consistent model-failure handling.** Core semantic paths have strict failure/development-fallback controls, but `AdversarialRedTeamAgent` and `RootCauseAnalyzer` catch all model exceptions and return deterministic results without consulting that control. Authentication errors swallowed there cannot reach the queue's authentication-failure pause. Align specialist fallback and authentication propagation before describing strict failure handling as universal. See [advanced.py](../src/seldon/agents/advanced.py), [feedback.py](../src/seldon/agents/feedback.py), and [jobs.py](../src/seldon/ops/jobs.py).
+- **Distributed execution and replay.** `InProcessJobQueue` persists jobs and leases but executes a local FIFO worker; it is not a distributed queue with atomic worker claiming, lease renewal and general cancellation. Coordinators call specialists directly and persist messages; arbitrary specialist replay is not a general message-routing system. See [jobs.py](../src/seldon/ops/jobs.py), [agent base](../src/seldon/agents/base.py), and `/runs/{id}/retry` in [app.py](../src/seldon/api/app.py).
+- **Durable settings and richer access control.** Model settings PATCH updates running configuration; a durable configuration store/change history is still missing. Authentication is API-key/local-bypass based, without a user/role/session authorization model. Treat stronger controls as deployment-dependent work. See [API configuration/authentication](../src/seldon/api/app.py) and [config.py](../src/seldon/config.py).
+- **Production storage lifecycle.** Default repository embeddings remain local unless a remote provider is injected. Remote embeddings and pgvector exist, but model/dimension transitions and production-scale validation need deliberate migration/verification. Built-in backup/restore handles SQLite and vector artifacts; PostgreSQL backup/restore needs external database tooling. See [vector.py](../src/seldon/kb/vector.py), [repositories.py](../src/seldon/data/repositories.py), and [backups.py](../src/seldon/ops/backups.py).
+- **Projection scale.** Topic/source state reconstructs from append-only run events. The workflow identifies an indexed materialized projection as a future scaling step while retaining the event history. This is a scaling limitation, not missing provenance support. See [perspectives implementation](../src/seldon/workspace/perspectives/__init__.py) and [source-graph storage notes](topic-source-graphs.md).
+
+### Console integration
+
+- **Entity merge execution.** A merge inbox and approve/reject routes exist, but those routes only record audit decisions. A reviewed merge still needs a transactional implementation for aliases, incident references, shared scenario membership and history; approval is not evidence that nodes were merged. See the merge-proposal handlers in [app.py](../src/seldon/api/app.py) and [Graph Explorer](../apps/web/app/graph/page.tsx).
+- **Live progress and graph selection.** Backend SSE endpoints exist, but the scenario console instructs manual refresh and does not subscribe/poll. The React Flow canvas lacks node/edge click handlers that open detail; table links provide selection. See [scenario detail](../apps/web/app/scenarios/[id]/page.tsx) and [graph canvas](../apps/web/src/components/graph-explorer-canvas.tsx).
+- **Audit panels and authenticated downloads.** KB detail and graph pages render audit panels without loading items; run detail already supplies them. Scenario report anchors point straight at the backend and cannot attach the API-key headers used by the JSON client. Wire audit data and a suitable authenticated download/proxy flow. See [KB detail](../apps/web/app/kb/[id]/page.tsx), [graph page](../apps/web/app/graph/page.tsx), [scenario client](../apps/web/src/lib/api/scenarios.ts), and [API middleware](../src/seldon/api/app.py).
+- **Workspace-specific console exposure.** `apps/web` has no dedicated external-workspace, report-bundle or topic/source editor. Those backend capabilities are available via CLI/API; existing docs describe Parallax consumers. Adding them to this console is an ownership/product choice, not evidence that the backend feature is missing. See [routes](../apps/web/app/AGENTS.md) and [typed clients](../apps/web/src/lib/api/AGENTS.md).
+
+### Verification gaps
+
+- SQLite migration smoke tests and PostgreSQL SQL-text assertions do not execute real PostgreSQL/pgvector behavior. CI has no PostgreSQL test service. Add backend-specific integration coverage if that deployment is a supported target. See [integration map](../tests/integration/AGENTS.md), [embedding tests](../tests/unit/test_followup_c11_embeddings.py), and [CI](../.github/workflows/ci.yml).
+- The baseline migration calls current model metadata; fresh-database success does not prove all historical schemas upgrade correctly. Historical upgrade fixtures and downgrade round trips need separate verification. Migration tests also need isolation from database environment selectors because Alembic can prefer those over a supplied temporary URL. See [migration environment](../alembic/env.py), [baseline](../alembic/versions/0001_phase_c_persistence.py), and [migration tests](../tests/integration/test_phase_c_migration.py).
+- Frontend browser tests use a mock API. They are useful regressions but do not establish complete browser-to-real-backend compatibility or provider availability. Inspect inherited API URL settings before launching the mock harness. See [frontend test map](../apps/web/tests/AGENTS.md).
+
+## Historical plans: what has changed
+
+| Document | How to use it now |
+| --- | --- |
+| [prediction-system-plan.md](../prediction-system-plan.md) | Original phase/coordinator architecture and ambitious forecasting goals. The code implements many structures, but empirical quality and fully autonomous learning remain separate questions. |
+| [implementation-plan.md](../implementation-plan.md) | Historical phases and successive review snapshots. Claims that CLI, external retrieval, model-backed specialists, pgvector, graph algorithms, durable jobs, SSE, charts, merge inbox, guided feedback, richer exports, startup migrations or Docker CI are entirely absent are stale. Some deeper limitations survive in the list above. |
+| [llm-entity-pipeline-plan.md](../llm-entity-pipeline-plan.md) | Queue auth pause, LLM decomposition/extraction/resolution and graph safeguards have implementation. Strict failure controls exist in core semantic paths but are inconsistent across specialists as noted above. Any suggested cleanup of old bad research is a separate data operation; this review did not inspect or clean a live database. |
+| [scenario-chat-simplification-plan.md](../scenario-chat-simplification-plan.md) | Draft/confirm scenario creation, original-prompt persistence and UI status simplification exist. Backend scenario status remains for compatibility; removing it requires checking consumers. |
+| [design.md](../design.md) | Presentation and integration principles. Compare desired polling, inspection and provenance behavior with the concrete console gaps above. |
+
+## Verification performed for this inventory
+
+`uv run pytest -m "not live_openrouter" -q` completed with **178 passed, 2 deselected** on the review date. Five deprecation warnings concerned Alembic path parsing and the HTTP 422 constant. Database environment selectors were checked before the completed run; none selected a live database. The documentation hierarchy was checked for directory coverage, root backlinks and local link targets.
+
+Live provider tests, frontend builds/browser tests, Docker execution and PostgreSQL integration were not run for this documentation-only change. Configured CI gates are described in the [workflow map](../.github/workflows/AGENTS.md); their presence is distinct from a successful run in this review.
+
+Update this inventory when implementation changes invalidate a capability or limitation, and update the relevant directory guides. Keep operational procedures in their focused documents rather than expanding this status snapshot into another implementation plan.
