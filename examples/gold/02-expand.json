@@ -1,0 +1,177 @@
+{
+  "schema_version": 1,
+  "scenario_id": "SET_BY_REPLAY_OR_AGENT",
+  "base_revision": "SET_FROM_CURRENT_EXPORT",
+  "request_id": "gold-research-2",
+  "agent": "external-agent-gold-example",
+  "reason": "Expand missing currency/investor factors and update the price and real-yield evidence",
+  "evidence": [
+    {
+      "id": "real",
+      "content": "FRED DFII10 showed the 10-year inflation-indexed Treasury yield at 2.85% for 24 September 2026, after 2.76% for 23 September. The page was updated on 25 September; later observations were not verified.",
+      "source_name": "Federal Reserve H.15 via FRED",
+      "source_url": "https://fred.stlouisfed.org/series/DFII10",
+      "published_at": "2026-09-25T20:16:00Z",
+      "retrieved_at": "2026-09-28T07:54:58.032974+00:00",
+      "confidence": 0.97
+    },
+    {
+      "id": "flows",
+      "content": "WGC linked the August 2026 gold rally to ETF/futures demand and a weaker dollar. Those monthly observations add investor-flow and currency channels; they do not establish that August momentum persists in late September.",
+      "source_name": "World Gold Council",
+      "source_url": "https://www.gold.org/goldhub/research/gold-market-commentary-august-2026",
+      "published_at": "2026-09-09T00:00:00Z",
+      "retrieved_at": "2026-09-28T07:54:58.032974+00:00",
+      "confidence": 0.8
+    },
+    {
+      "id": "latest",
+      "content": "Reuters reported gold at USD 4,171.85 per troy ounce at 06:27 UTC on 28 September 2026, down 2.7%. Its report described higher oil prices and renewed rate-hike expectations, with unresolved US–Iran diplomacy. This updates the earlier spot reference.",
+      "source_name": "Reuters via MarketScreener",
+      "source_url": "https://ca.marketscreener.com/news/gold-drops-more-than-1-on-us-rate-hike-bets-ce785adcdb89f32d",
+      "published_at": "2026-09-28T06:34:00Z",
+      "retrieved_at": "2026-09-28T07:54:58.032974+00:00",
+      "confidence": 0.9
+    }
+  ],
+  "nodes": [
+    {
+      "id": "gold",
+      "name": "Gold price",
+      "type": "metric",
+      "description": "Forecast target: USD per troy ounce at the resolution benchmark.",
+      "current_state": "Latest verified spot reference is in the 28 September report; not a live quote.",
+      "evidence_ids": [
+        "spot",
+        "latest",
+        "mechanisms"
+      ]
+    },
+    {
+      "id": "bonds",
+      "name": "Bond market / US real yields",
+      "type": "metric",
+      "description": "Real yield opportunity cost; distinguish from nominal bond yields.",
+      "current_state": "Direct real-yield evidence adds a headwind; later yield observations remain unknown.",
+      "evidence_ids": [
+        "real",
+        "mechanisms"
+      ]
+    },
+    {
+      "id": "dollar",
+      "name": "US dollar",
+      "type": "metric",
+      "description": "USD valuation and the currency cost of gold.",
+      "current_state": "August weakness supported gold; do not extrapolate it without a current currency series.",
+      "evidence_ids": [
+        "flows",
+        "mechanisms"
+      ]
+    },
+    {
+      "id": "etfs",
+      "name": "Gold ETF / investor flows",
+      "type": "metric",
+      "description": "Investment demand and positioning; potential reversal after inflows.",
+      "current_state": "August demand supported gold; fresh flow persistence remains uncertain.",
+      "evidence_ids": [
+        "flows",
+        "mechanisms"
+      ]
+    }
+  ],
+  "edges": [
+    {
+      "id": "fed-dollar",
+      "source": "fed",
+      "target": "dollar",
+      "relationship": "causes",
+      "description": "Relative monetary tightening may strengthen the dollar; other economies matter.",
+      "direction": "complex",
+      "strength": 0.5,
+      "confidence": 0.5,
+      "lag": "within forecast horizon; uncertain",
+      "evidence_ids": [
+        "fed",
+        "mechanisms"
+      ]
+    },
+    {
+      "id": "dollar-gold",
+      "source": "dollar",
+      "target": "gold",
+      "relationship": "causes",
+      "description": "A stronger dollar can reduce demand for USD-priced gold.",
+      "direction": "negative",
+      "strength": 0.5,
+      "confidence": 0.5,
+      "lag": "within forecast horizon; uncertain",
+      "evidence_ids": [
+        "flows",
+        "mechanisms"
+      ]
+    },
+    {
+      "id": "etfs-gold",
+      "source": "etfs",
+      "target": "gold",
+      "relationship": "causes",
+      "description": "Investor inflows add demand; reversals can amplify declines.",
+      "direction": "positive",
+      "strength": 0.5,
+      "confidence": 0.5,
+      "lag": "within forecast horizon; uncertain",
+      "evidence_ids": [
+        "flows",
+        "mechanisms"
+      ]
+    },
+    {
+      "id": "bonds-etfs",
+      "source": "bonds",
+      "target": "etfs",
+      "relationship": "causes",
+      "description": "Higher real yields may reduce investor allocations to gold; avoid counting this twice with direct opportunity cost.",
+      "direction": "negative",
+      "strength": 0.5,
+      "confidence": 0.5,
+      "lag": "within forecast horizon; uncertain",
+      "evidence_ids": [
+        "real",
+        "mechanisms"
+      ]
+    }
+  ],
+  "research_round": {
+    "queries": [
+      "site.fred.stlouisfed.org/series/DFII10 September 2026",
+      "site.gold.org gold ETF flows August 2026 September 2026",
+      "gold September 28 2026 rate hike bets Reuters"
+    ],
+    "checked_node_ids": [
+      "gold",
+      "us-iran",
+      "hormuz",
+      "central-banks",
+      "bonds",
+      "oil",
+      "fed",
+      "dollar",
+      "etfs"
+    ],
+    "sources_consulted": [
+      "https://fred.stlouisfed.org/series/DFII10",
+      "https://www.gold.org/goldhub/research/gold-market-commentary-august-2026",
+      "https://ca.marketscreener.com/news/gold-drops-more-than-1-on-us-rate-hike-bets-ce785adcdb89f32d"
+    ],
+    "new_information": true,
+    "stop_reason": "continue",
+    "summary": "Added currency/investor channels and direct real-yield observation; latest spot update changes the starting reference. Preserve monthly/quarterly lags.",
+    "remaining_gaps": [
+      "Fresh official purchases and ETF flow persistence",
+      "No calibrated causal coefficients or six-month return distribution",
+      "Precise shipping throughput and future diplomatic outcome"
+    ]
+  }
+}

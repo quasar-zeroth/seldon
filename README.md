@@ -6,22 +6,23 @@ The Python package and app are named `seldon`. User-facing prose can refer to th
 
 Parallax can consume this package as a Python dependency while keeping frontend, pipeline orchestration, market execution, and GUI code in the main `parallax` repo until those pieces are migrated or replaced by the Seldon frontend/API.
 
-## OpenRouter configuration
+## Research without provider API keys
 
-Set your OpenRouter API key outside git:
+Use your existing agent session to research and author forecasts through Seldon's validated DAG workspace. Start with [the agent workflow](docs/agent-workflow.md) and [AGENTS.md](AGENTS.md).
 
 ```bash
-export OPENROUTER_API_KEY="sk-or-..."
+uv sync
+uv run seldon research --help
+uv run python examples/gold/replay.py --db data/gold-example.db --out data/gold-example
 ```
 
-For local Docker Compose runs, copy `.env.example` to `.env` and set `OPENROUTER_API_KEY` there. `.env` files are gitignored.
+The gold replay uses checked-in dated evidence and agent judgments; it performs no live search or model calls. JSON/Markdown exports expose every saved research step. Parallax delegates `parallax research` to this same engine and its `/research` page displays saved scenarios.
 
-Default model config lives in `src/seldon/config.py`:
+Entities carry normalized tags; `research --db PATH library --tag data-center` finds reusable campuses across questions. `research --db PATH reports generate SCENARIO_ID --request-id UNIQUE_ID` saves an immutable summary/detailed bundle, optionally with agent-authored sections and CSV/JSON attachments. Use `research reports list` and `research reports download --help` to retrieve it, or Parallax's **Reports** page. Reports are stored in the same database as the graph; see the [agent workflow](docs/agent-workflow.md) for schemas, pagination and migration instructions.
 
-- Default/balanced: `tencent/hy3-preview:free`
-- Fast: `tencent/hy3-preview:free`
-- Reasoning: `tencent/hy3-preview:free`
-- Fallbacks: `openrouter/owl-alpha`, `minimax/minimax-m2.5:free`, `nvidia/nemotron-3-super-120b-a12b:free`
+## Optional built-in model pipeline
+
+The built-in semantic coordinators still require a provider. Set credentials outside git using `.env.example` as the configuration reference. Supported provider presets, current model IDs, fallback policy, and environment overrides live in `src/seldon/config.py`; derive them there rather than relying on copied model lists.
 
 ## Local API + web development
 
@@ -80,3 +81,5 @@ To exclude them explicitly:
 ```bash
 uv run pytest -m "not live_openrouter"
 ```
+
+Topic and source graphs, conflicting claims, contextual trust/leaning reviews and ownership/affiliation provenance are available through Parallax Topics/Sources and `research perspectives`. See [the agent workflow](docs/topic-source-graphs.md).

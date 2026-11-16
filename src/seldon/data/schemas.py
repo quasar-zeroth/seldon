@@ -64,6 +64,7 @@ class KBEntryContradictionCreate(BaseModel):
 
 
 class ERGNodeCreate(BaseModel):
+    tags: list[str] = Field(default_factory=list)
     name: str
     type: Literal["entity", "event", "topic", "metric", "policy", "actor"]
     description: str = ""

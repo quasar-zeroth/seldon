@@ -334,13 +334,11 @@ def create_app(
             extra={"event": "llm_provider_active", "provider": _llm_cfg.provider, "base_url": _llm_cfg.base_url, "api_key_env": _llm_cfg.api_key_env, "api_key_configured": _llm_key_present, "default_model": _llm_cfg.default_model},
         )
         if not _llm_key_present:
-            # The single most common failure mode: key not in the process env (no
-            # .env loaded). Without it every LLM call 401s and the queue pauses.
-            logger.error(
-                "llm_api_key_missing",
-                extra={"event": "llm_api_key_missing", "provider": _llm_cfg.provider, "api_key_env": _llm_cfg.api_key_env, "hint": f"set {_llm_cfg.api_key_env} (see .env / .env.example); LLM phases will 401 and the job queue will pause"},
+            logger.info(
+                "llm_api_key_not_configured",
+                extra={"event": "llm_api_key_not_configured", "provider": _llm_cfg.provider, "api_key_env": _llm_cfg.api_key_env, "hint": "External-agent workspace is available; configure a provider only to run built-in semantic phases"},
             )
-        if os.getenv("SELDON_SKIP_LLM_HEALTHCHECK", "").lower() not in {"1", "true", "yes", "on"}:
+        if _llm_key_present and os.getenv("SELDON_SKIP_LLM_HEALTHCHECK", "").lower() not in {"1", "true", "yes", "on"}:
             try:
                 health = app_llm_client.healthcheck(timeout=10.0)
                 for model, info in health.items():
@@ -363,6 +361,8 @@ def create_app(
         version="0.1.0",
         lifespan=lifespan,
     )
+    from seldon.workspace.api import build_router
+    app.include_router(build_router(get_session_dep))
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],

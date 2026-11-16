@@ -1,0 +1,175 @@
+{
+  "schema_version": 1,
+  "scenario_id": "SET_BY_REPLAY_OR_AGENT",
+  "base_revision": "SET_FROM_CURRENT_EXPORT",
+  "request_id": "gold-forecast-3",
+  "agent": "external-agent-gold-example",
+  "reason": "Bounded final review and subjective scenario synthesis over the saved DAG",
+  "research_round": {
+    "queries": [
+      "Follow-up review: compare latest Reuters rate/oil explanation with WGC demand and FRED real-yield evidence",
+      "Check every saved node for missing mechanism, dated source, or contradictory direction"
+    ],
+    "checked_node_ids": [
+      "gold",
+      "us-iran",
+      "hormuz",
+      "central-banks",
+      "bonds",
+      "oil",
+      "fed",
+      "dollar",
+      "etfs"
+    ],
+    "sources_consulted": [
+      "https://www.federalreserve.gov/newsevents/pressreleases/monetary20260916a.htm",
+      "https://www.gold.org/goldhub/research/gold-demand-trends/gold-demand-trends-q2-2026/central-banks",
+      "https://www.eia.gov/Todayinenergy/detail.php?id=67865",
+      "https://apnews.com/article/iran-us-yemen-saudi-houthis-hormuz-september-21-2026-82714681bde58c6525c2d7a1bc587b25",
+      "https://ca.marketscreener.com/news/mounting-rate-hike-bets-keep-weekly-loss-in-sight-for-gold-ce785adfde8aff23",
+      "https://fred.stlouisfed.org/series/DFII10",
+      "https://www.gold.org/goldhub/research/gold-market-commentary-august-2026",
+      "https://ca.marketscreener.com/news/gold-drops-more-than-1-on-us-rate-hike-bets-ce785adcdb89f32d"
+    ],
+    "new_information": false,
+    "stop_reason": "exhausted",
+    "summary": "Re-read the cited source set after the second research pass; found no additional material drivers within this bounded review. This is source-set saturation, not exhaustive web coverage.",
+    "remaining_gaps": [
+      "Latest complete official/ETF demand data and exact shipping throughput remain unavailable in this source set",
+      "No fitted conditional price distribution; source claims and assumptions need ongoing review"
+    ]
+  },
+  "forecast": {
+    "target_node_id": "gold",
+    "as_of": "2026-09-28T07:54:58.032974+00:00",
+    "resolution_date": "2027-03-28",
+    "units": "USD per troy ounce",
+    "statement": "Six-month base case: gold around USD 3,900–4,700/oz, with substantial risk outside that range.",
+    "resolution_criteria": "Use the last published LBMA Gold Price PM in USD per troy ounce on or before 2027-03-28. Bear: below 3900; base: at least 3900 and below 4700; bull: at least 4700. Do not substitute intraday spot or futures without documenting a benchmark change.",
+    "branches": [
+      {
+        "key": "bear",
+        "probability": 0.3,
+        "outcome": "Below USD 3,900/oz",
+        "rationale": "Persistent inflation, high real yields, stronger dollar, or investor selling outweigh official demand. More severe downside remains possible."
+      },
+      {
+        "key": "base",
+        "probability": 0.45,
+        "outcome": "USD 3,900 to below 4,700/oz",
+        "value_low": 3900,
+        "value_high": 4700,
+        "rationale": "Demand support and geopolitical uncertainty offset restrictive policy; no decisive change in regime."
+      },
+      {
+        "key": "bull",
+        "probability": 0.25,
+        "outcome": "At least USD 4,700/oz",
+        "rationale": "Real yields fall or monetary/fiscal confidence weakens while official and investor demand strengthens. A purely inflationary war shock need not be bullish."
+      }
+    ],
+    "confidence": 0.4,
+    "node_assessments": [
+      {
+        "node_id": "gold",
+        "forecast": "Base scenario 3,900–4,700 USD/oz; meaningful downside and upside alternatives.",
+        "rationale": "Synthesize policy/yield headwinds against official demand and optional safe-haven support without treating correlated paths as independent evidence.",
+        "evidence_ids": [
+          "spot",
+          "latest",
+          "mechanisms"
+        ]
+      },
+      {
+        "node_id": "us-iran",
+        "forecast": "Continuing conflict risk with meaningful negotiation and escalation branches.",
+        "rationale": "Evidence supports uncertainty, not a known ending date.",
+        "evidence_ids": [
+          "war",
+          "mechanisms"
+        ]
+      },
+      {
+        "node_id": "hormuz",
+        "forecast": "Shipping recovery is possible but unreliable; sustained disruption remains a risk.",
+        "rationale": "Treat transit as a conditional mediator of conflict rather than an independent shock.",
+        "evidence_ids": [
+          "war",
+          "hormuz",
+          "mechanisms"
+        ]
+      },
+      {
+        "node_id": "central-banks",
+        "forecast": "Official demand can buffer prices but may fluctuate or be revised.",
+        "rationale": "Use quarterly evidence with lag and confidence discounts; no fixed buying floor.",
+        "evidence_ids": [
+          "cb",
+          "mechanisms"
+        ]
+      },
+      {
+        "node_id": "bonds",
+        "forecast": "Elevated real yields are a downside risk; falling yields are the main upside catalyst.",
+        "rationale": "Direct real-yield data supports an opportunity-cost mechanism, not an estimated price elasticity.",
+        "evidence_ids": [
+          "real",
+          "mechanisms"
+        ]
+      },
+      {
+        "node_id": "oil",
+        "forecast": "Energy inflation risk persists if disruption remains; reopening could reduce it.",
+        "rationale": "Follow the shipping-to-policy path and allow the sign of the net gold effect to differ.",
+        "evidence_ids": [
+          "hormuz",
+          "mechanisms"
+        ]
+      },
+      {
+        "node_id": "fed",
+        "forecast": "Restrictive policy remains plausible; disinflation could change it.",
+        "rationale": "Recent tightening makes immediate easing an assumption requiring stronger evidence.",
+        "evidence_ids": [
+          "fed",
+          "mechanisms"
+        ]
+      },
+      {
+        "node_id": "dollar",
+        "forecast": "Directional USD forecast uncertain; further strength would be a headwind.",
+        "rationale": "Current currency levels are missing, so treat the currency branch as conditional.",
+        "evidence_ids": [
+          "flows",
+          "mechanisms"
+        ]
+      },
+      {
+        "node_id": "etfs",
+        "forecast": "Investor demand may persist or reverse; do not extrapolate the August rally.",
+        "rationale": "Flows can amplify the yield narrative and are partly endogenous to prices.",
+        "evidence_ids": [
+          "flows",
+          "mechanisms"
+        ]
+      }
+    ],
+    "synthesis": "Traverse conflict → shipping → energy → policy → real yields/currency → gold. Compare that headwind with central-bank and investor demand. The direct safe-haven channel can oppose the inflation/rate channel, so avoid the simplistic rule that war always raises gold. Count yield-to-gold and yield-to-investor-flow effects as related paths. The forecast branch weights are the external agent’s subjective synthesis, not a mechanical multiplication of edge weights.",
+    "base_rate": "No empirical six-month conditional gold return distribution was fitted. Observed monthly volatility motivates broad scenarios but is not a calibrated base rate.",
+    "assumptions": [
+      "The USD/LBMA resolution benchmark remains available.",
+      "No mechanical price floor is implied by central-bank buying.",
+      "The direction and strength of causal links are qualitative hypotheses, not estimated coefficients."
+    ],
+    "red_team": [
+      "War-driven energy inflation can hurt gold through tighter policy even while safe-haven demand rises.",
+      "Official buying and investor inflows may already be reflected in price and can reverse.",
+      "A liquidity shock could force gold sales; the graph omits detailed leverage and supply responses."
+    ],
+    "uncertainties": [
+      "Probabilities are uncalibrated agent judgments; confidence is subjective.",
+      "Official-sector and ETF data have reporting lags; the selected evidence is not exhaustive.",
+      "Diplomatic outcomes, future real yields, and FX responses remain uncertain."
+    ]
+  }
+}

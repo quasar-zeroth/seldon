@@ -1,0 +1,284 @@
+{
+  "schema_version": 1,
+  "scenario_id": "SET_BY_REPLAY_OR_AGENT",
+  "base_revision": "SET_FROM_CURRENT_EXPORT",
+  "request_id": "gold-research-1",
+  "agent": "external-agent-gold-example",
+  "reason": "Dated initial research and causal hypotheses, not a calibrated model",
+  "evidence": [
+    {
+      "id": "fed",
+      "content": "On 16 September 2026 the FOMC raised the policy target to 3.75–4.00%, citing elevated inflation. This is a nominal policy rate, not the real bond yield.",
+      "source_name": "Federal Reserve",
+      "source_url": "https://www.federalreserve.gov/newsevents/pressreleases/monetary20260916a.htm",
+      "published_at": "2026-09-16T18:00:00Z",
+      "retrieved_at": "2026-09-28T07:54:58.032974+00:00",
+      "confidence": 0.98
+    },
+    {
+      "id": "cb",
+      "content": "WGC estimated Q2 2026 official-sector net gold purchases near 289 tonnes. The first-half total was 345 tonnes, weaker than other first halves since 2022. Quarterly demand is not a current monthly purchase rate.",
+      "source_name": "World Gold Council",
+      "source_url": "https://www.gold.org/goldhub/research/gold-demand-trends/gold-demand-trends-q2-2026/central-banks",
+      "published_at": "2026-07-30T00:00:00Z",
+      "retrieved_at": "2026-09-28T07:54:58.032974+00:00",
+      "confidence": 0.8
+    },
+    {
+      "id": "hormuz",
+      "content": "EIA attributed volatile and elevated Q2 2026 oil prices partly to disrupted Hormuz flows. A June agreement and more tanker movements coincided with lower oil prices; renewed strikes subsequently increased uncertainty. This is historical transmission evidence.",
+      "source_name": "US Energy Information Administration",
+      "source_url": "https://www.eia.gov/Todayinenergy/detail.php?id=67865",
+      "published_at": "2026-07-15T00:00:00Z",
+      "retrieved_at": "2026-09-28T07:54:58.032974+00:00",
+      "confidence": 0.95
+    },
+    {
+      "id": "war",
+      "content": "AP reported an Iranian escalation warning and a tanker strike near Hormuz on 21 September 2026. It reported some transits, but traffic below former levels. This does not establish total closure or its future duration.",
+      "source_name": "Associated Press",
+      "source_url": "https://apnews.com/article/iran-us-yemen-saudi-houthis-hormuz-september-21-2026-82714681bde58c6525c2d7a1bc587b25",
+      "published_at": "2026-09-21T10:44:03Z",
+      "retrieved_at": "2026-09-28T07:54:58.032974+00:00",
+      "confidence": 0.85
+    },
+    {
+      "id": "spot",
+      "content": "Reuters reported spot gold at USD 4,282.98 per troy ounce at 18:05 UTC on 25 September 2026, alongside rising Treasury yields. This is a timestamped spot observation rather than the LBMA fixing.",
+      "source_name": "Reuters via MarketScreener",
+      "source_url": "https://ca.marketscreener.com/news/mounting-rate-hike-bets-keep-weekly-loss-in-sight-for-gold-ce785adfde8aff23",
+      "published_at": "2026-09-25T18:28:00Z",
+      "retrieved_at": "2026-09-28T07:54:58.032974+00:00",
+      "confidence": 0.9
+    },
+    {
+      "id": "mechanisms",
+      "kind": "assumption",
+      "content": "Working causal hypotheses: shipping disruption can raise energy inflation; tighter policy can lift real yields and the dollar, weighing on gold. Official buying and investor demand may support gold. War can create both safe-haven demand and an opposing rate channel. Edge strengths are judgmental; do not sum shared paths as independent shocks.",
+      "source_name": "External agent: explicit causal assumptions",
+      "source_url": null,
+      "published_at": null,
+      "retrieved_at": "2026-09-28T07:54:58.032974+00:00",
+      "confidence": 0.5
+    }
+  ],
+  "nodes": [
+    {
+      "id": "gold",
+      "name": "Gold price",
+      "type": "metric",
+      "description": "Forecast target: USD per troy ounce at the resolution benchmark.",
+      "current_state": "Dated reference in spot evidence; update before synthesis.",
+      "evidence_ids": [
+        "spot",
+        "mechanisms"
+      ]
+    },
+    {
+      "id": "us-iran",
+      "name": "US–Iran war",
+      "type": "event",
+      "description": "Conflict intensity and diplomatic path over the horizon.",
+      "current_state": "Escalation risk persists; duration unknown.",
+      "evidence_ids": [
+        "war",
+        "mechanisms"
+      ]
+    },
+    {
+      "id": "hormuz",
+      "name": "Strait of Hormuz shipping",
+      "type": "metric",
+      "description": "Disruption severity and ability of tankers to transit.",
+      "current_state": "Partial transit with security risk; exact daily volumes not established.",
+      "evidence_ids": [
+        "war",
+        "hormuz",
+        "mechanisms"
+      ]
+    },
+    {
+      "id": "central-banks",
+      "name": "Central bank buying",
+      "type": "actor",
+      "description": "Official-sector gold demand; reported and unreported flows differ.",
+      "current_state": "Quarterly buying is supportive but not a guarantee of future accumulation.",
+      "evidence_ids": [
+        "cb",
+        "mechanisms"
+      ]
+    },
+    {
+      "id": "bonds",
+      "name": "Bond market / US real yields",
+      "type": "metric",
+      "description": "Real yield opportunity cost; distinguish from nominal bond yields.",
+      "current_state": "Recent report indicates yield pressure; acquire direct real-yield series.",
+      "evidence_ids": [
+        "spot",
+        "mechanisms"
+      ]
+    },
+    {
+      "id": "oil",
+      "name": "Oil / energy inflation",
+      "type": "metric",
+      "description": "Transmission from shipping disruption to inflation pressure.",
+      "current_state": "Historical disruption channel established; persistence uncertain.",
+      "evidence_ids": [
+        "hormuz",
+        "mechanisms"
+      ]
+    },
+    {
+      "id": "fed",
+      "name": "Federal Reserve policy",
+      "type": "policy",
+      "description": "Policy response to inflation and activity.",
+      "current_state": "Recent tightening; future path conditional on inflation and employment.",
+      "evidence_ids": [
+        "fed",
+        "mechanisms"
+      ]
+    }
+  ],
+  "edges": [
+    {
+      "id": "war-shipping",
+      "source": "us-iran",
+      "target": "hormuz",
+      "relationship": "causes",
+      "description": "Hypothesis: further fighting raises transit disruption risk.",
+      "direction": "negative",
+      "strength": 0.5,
+      "confidence": 0.5,
+      "lag": "within forecast horizon; uncertain",
+      "evidence_ids": [
+        "war",
+        "mechanisms"
+      ]
+    },
+    {
+      "id": "shipping-oil",
+      "source": "hormuz",
+      "target": "oil",
+      "relationship": "causes",
+      "description": "Greater effective shipping capacity can ease the energy supply premium.",
+      "direction": "negative",
+      "strength": 0.5,
+      "confidence": 0.5,
+      "lag": "within forecast horizon; uncertain",
+      "evidence_ids": [
+        "hormuz",
+        "mechanisms"
+      ]
+    },
+    {
+      "id": "oil-fed",
+      "source": "oil",
+      "target": "fed",
+      "relationship": "causes",
+      "description": "Persistent energy inflation may induce a tighter policy response.",
+      "direction": "positive",
+      "strength": 0.5,
+      "confidence": 0.5,
+      "lag": "within forecast horizon; uncertain",
+      "evidence_ids": [
+        "fed",
+        "mechanisms"
+      ]
+    },
+    {
+      "id": "fed-bonds",
+      "source": "fed",
+      "target": "bonds",
+      "relationship": "causes",
+      "description": "Tighter policy may raise real yields; inflation expectations and term premium can offset it.",
+      "direction": "complex",
+      "strength": 0.5,
+      "confidence": 0.5,
+      "lag": "within forecast horizon; uncertain",
+      "evidence_ids": [
+        "fed",
+        "mechanisms"
+      ]
+    },
+    {
+      "id": "bonds-gold",
+      "source": "bonds",
+      "target": "gold",
+      "relationship": "causes",
+      "description": "Higher real yields increase the opportunity cost of holding non-yielding gold.",
+      "direction": "negative",
+      "strength": 0.5,
+      "confidence": 0.5,
+      "lag": "within forecast horizon; uncertain",
+      "evidence_ids": [
+        "spot",
+        "mechanisms"
+      ]
+    },
+    {
+      "id": "cb-gold",
+      "source": "central-banks",
+      "target": "gold",
+      "relationship": "causes",
+      "description": "Sustained official purchases can support demand at a given supply.",
+      "direction": "positive",
+      "strength": 0.5,
+      "confidence": 0.5,
+      "lag": "within forecast horizon; uncertain",
+      "evidence_ids": [
+        "cb",
+        "mechanisms"
+      ]
+    },
+    {
+      "id": "war-gold",
+      "source": "us-iran",
+      "target": "gold",
+      "relationship": "causes",
+      "description": "Safe-haven demand may support gold, but its sign must be assessed alongside the rate channel.",
+      "direction": "complex",
+      "strength": 0.5,
+      "confidence": 0.5,
+      "lag": "within forecast horizon; uncertain",
+      "evidence_ids": [
+        "war",
+        "mechanisms"
+      ]
+    }
+  ],
+  "research_round": {
+    "queries": [
+      "gold September 25 2026 Reuters spot gold",
+      "site.gold.org central bank buying Q2 2026",
+      "site.eia.gov Strait Hormuz Iran war 2026",
+      "site.federalreserve.gov September 2026 federal funds rate statement"
+    ],
+    "checked_node_ids": [
+      "gold",
+      "us-iran",
+      "hormuz",
+      "central-banks",
+      "bonds",
+      "oil",
+      "fed"
+    ],
+    "sources_consulted": [
+      "https://www.federalreserve.gov/newsevents/pressreleases/monetary20260916a.htm",
+      "https://www.gold.org/goldhub/research/gold-demand-trends/gold-demand-trends-q2-2026/central-banks",
+      "https://www.eia.gov/Todayinenergy/detail.php?id=67865",
+      "https://apnews.com/article/iran-us-yemen-saudi-houthis-hormuz-september-21-2026-82714681bde58c6525c2d7a1bc587b25",
+      "https://ca.marketscreener.com/news/mounting-rate-hike-bets-keep-weekly-loss-in-sight-for-gold-ce785adfde8aff23"
+    ],
+    "new_information": true,
+    "stop_reason": "continue",
+    "summary": "Seeded requested drivers and intermediate policy/energy channels. Need real-yield, currency, flows, and latest-price follow-up.",
+    "remaining_gaps": [
+      "Current real yields",
+      "Dollar and ETF demand channels",
+      "Latest price and diplomacy"
+    ]
+  }
+}

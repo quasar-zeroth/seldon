@@ -119,6 +119,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     health = sub.add_parser("healthcheck", help="Check DB/config reachability")
     health.set_defaults(func=cmd_healthcheck)
+    from seldon.workspace.cli import add_parser
+    add_parser(sub)
     return parser
 
 

@@ -6,6 +6,7 @@ with provenance, probability history, drivers, assumptions, and traversal logs.
 """
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 from typing import Any, Literal
 
@@ -15,6 +16,7 @@ from sqlalchemy import select
 from seldon.data.models import BaseRateEvidence, ERGEdge, ERGNode, KBEntry, Scenario, ScenarioPrediction, ScenarioVersion
 from seldon.data.repositories import AuditRepository, GraphRepository, MarkdownExporter, ScenarioRepository
 from seldon.llm.openrouter import LLMAuthenticationError
+from seldon.workspace.knowledge import freeze_graph, knowledge_revision, scoped_graph
 
 from .advanced import AdversarialRedTeamAgent, AdvancedIntelligenceInput, RedTeamOutput
 from .base import AgentBase
@@ -86,7 +88,7 @@ class TraversalStep(BaseModel):
 class GraphTraversalInput(BaseModel):
     scenario_id: str
     node_forecasts: list[NodeStateForecast]
-    max_depth: int = Field(default=3, ge=1, le=8)
+    max_depth: int = Field(default=4, ge=1, le=12)
     min_influence: float = Field(default=0.02, ge=0.0, le=1.0)
 
 
@@ -255,7 +257,10 @@ class NodeStatePredictor(AgentBase[NodeForecastInput, NodeStateForecast]):
         node = graph.get_node(payload.node_id)
         if node is None:
             raise KeyError(f"erg_node not found: {payload.node_id}")
-        edges = [edge for edge in graph.list_edges(node_id=node.id) if payload.scenario_id in (edge.scenario_ids or [])]
+        view = scoped_graph(self.db, payload.scenario_id)
+        if node.id not in view["graph"]:
+            raise ValueError("Node is outside the question's configured dependency scope")
+        edges = [edge for edge in view["edges"] if node.id in (edge.source_node_id, edge.target_node_id)]
         incoming = [edge for edge in edges if edge.target_node_id == node.id]
 
         # LLM-first path: use the node's own KB entries to ground a forecast.
@@ -274,6 +279,9 @@ class NodeStatePredictor(AgentBase[NodeForecastInput, NodeStateForecast]):
                     if kb_entries
                     else "(no KB evidence attached to this node)"
                 )
+                from seldon.workspace.perspectives import research_context
+                credibility = research_context(self.db, [node], kb_entries)
+                evidence_block += "\nAttributed claims and source assessments (subjective, not calibrated; account for contradictions, corrections and shared origins):\n" + json.dumps(credibility, ensure_ascii=False)
                 incoming_block = "\n".join(
                     f"- edge_id={edge.id} | from_node={edge.source_node_id} | {edge.relationship_type} | "
                     f"direction={edge.direction} | strength={edge.strength:.2f} | confidence={edge.confidence:.2f} | "
@@ -340,8 +348,10 @@ class GraphTraversalSimulator(AgentBase[GraphTraversalInput, GraphTraversalOutpu
             forecast.node_id: (1.0 if forecast.direction == "up" else -1.0 if forecast.direction == "down" else 0.0) * forecast.confidence
             for forecast in payload.node_forecasts
         }
-        graph = GraphRepository(self.db)
-        edges = graph.list_edges(scenario_id=payload.scenario_id)
+        view = scoped_graph(self.db, payload.scenario_id)
+        if not set(seed_signals) <= set(view["graph"]):
+            raise ValueError("Traversal seeds are outside the configured dependency scope")
+        edges = view["edges"]
         outgoing: dict[str, list[ERGEdge]] = {}
         for edge in edges:
             outgoing.setdefault(edge.source_node_id, []).append(edge)
@@ -487,6 +497,8 @@ class ScenarioSynthesizer(AgentBase[ScenarioSynthesisInput, ScenarioSynthesisOut
                             "content": (
                                 "Synthesize forecast scenarios from this prediction context.\n"
                                 f"Scenario: {scenario.name}\nQuestion: {payload.question}\nTimeframe: {payload.timeframe or scenario.time_horizon}\n"
+                                f"Claim/source context: {json.dumps(scoped_graph(self.db, payload.scenario_id).get('perspectives', {}), ensure_ascii=False)}\n"
+                                "Trust scores are subjective. Discuss unresolved contradictions and do not count syndicated sources as independent.\n"
                                 f"Node forecasts: {[f.model_dump(mode='json') for f in payload.node_forecasts]}\n"
                                 f"Traversal: {payload.traversal.model_dump(mode='json')}\n"
                                 f"Instability: {payload.instability.model_dump(mode='json')}\n"
@@ -569,7 +581,10 @@ class PredictionCoordinator(AgentBase[PredictionInput, PredictionOutput]):
         scenario = self.db.get(Scenario, payload.scenario_id)
         if scenario is None:
             raise KeyError(f"scenario not found: {payload.scenario_id}")
-        scenario_nodes = [node for node in GraphRepository(self.db).list_nodes() if payload.scenario_id in (node.scenario_ids or [])]
+        from seldon.workspace.perspectives import index_scenario
+        index_scenario(self.db, payload.scenario_id, agent=self.agent_id)
+        view = scoped_graph(self.db, payload.scenario_id)
+        scenario_nodes = view["nodes"]
         # Only forecast over real domain nodes — never stopword/scaffolding nodes.
         nodes = [node for node in scenario_nodes if is_valid_domain_node(node)]
         if len(nodes) < payload.min_graph_nodes:
@@ -587,7 +602,7 @@ class PredictionCoordinator(AgentBase[PredictionInput, PredictionOutput]):
             n_run, forecast = NodeStatePredictor(self.db, config=self.config, llm_client=self.llm_client).run(NodeForecastInput(scenario_id=payload.scenario_id, node_id=node.id, time_horizon=payload.timeframe), parent_run_id=run_id)
             child_run_ids.append(n_run)
             forecasts.append(forecast)
-        t_run, traversal = GraphTraversalSimulator(self.db, config=self.config, llm_client=self.llm_client).run(GraphTraversalInput(scenario_id=payload.scenario_id, node_forecasts=forecasts), parent_run_id=run_id)
+        t_run, traversal = GraphTraversalSimulator(self.db, config=self.config, llm_client=self.llm_client).run(GraphTraversalInput(scenario_id=payload.scenario_id, node_forecasts=forecasts, max_depth=view["scope"].max_depth), parent_run_id=run_id)
         child_run_ids.append(t_run)
         i_run, instability = InstabilityAnalyzer(self.db, config=self.config, llm_client=self.llm_client).run(InstabilityInput(scenario_id=payload.scenario_id, traversal=traversal), parent_run_id=run_id)
         child_run_ids.append(i_run)
@@ -595,6 +610,9 @@ class PredictionCoordinator(AgentBase[PredictionInput, PredictionOutput]):
         child_run_ids.append(b_run)
         s_run, synthesis = ScenarioSynthesizer(self.db, config=self.config, llm_client=self.llm_client).run(ScenarioSynthesisInput(scenario_id=payload.scenario_id, question=payload.question, timeframe=payload.timeframe, node_forecasts=forecasts, traversal=traversal, instability=instability, base_rates=base_rates), parent_run_id=run_id)
         child_run_ids.append(s_run)
+        if not set(synthesis.key_drivers) <= {n.id for n in view["nodes"]} or not set(synthesis.evidence_links) <= {e.id for e in view["evidence"]}:
+            raise ValueError("Prediction synthesis cites entities or evidence outside the configured dependency scope")
+        snapshot = freeze_graph(self.db, payload.scenario_id, view, agent=self.agent_id, reason="Prediction dependency context")
 
         repo = ScenarioRepository(self.db)
         existing = self.db.scalar(select(ScenarioPrediction).where(ScenarioPrediction.scenario_id == payload.scenario_id, ScenarioPrediction.status.in_(["draft", "active", "monitoring"])).order_by(ScenarioPrediction.updated_at.desc()))
@@ -614,6 +632,8 @@ class PredictionCoordinator(AgentBase[PredictionInput, PredictionOutput]):
             "evidence_links": synthesis.evidence_links,
             "assumptions": synthesis.assumptions,
             "status": status,
+            "calibration_result": {"graph_snapshot_id": snapshot.id, "graph_scope": view["scope"].model_dump(),
+                                   "knowledge_revision": knowledge_revision(view), "as_of": now},
         }
         if existing is None:
             prediction = repo.create_prediction(actor=self.agent_id, reason="Phase H prediction synthesis", probability_history=probability_history, **values)

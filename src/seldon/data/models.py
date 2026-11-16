@@ -100,6 +100,7 @@ class ERGNode(Base, TimestampMixin):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     type: Mapped[str] = mapped_column(String(32), nullable=False)
+    tags: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
     description: Mapped[str] = mapped_column(Text, default="", nullable=False)
     current_state: Mapped[str | None] = mapped_column(Text)
     state_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

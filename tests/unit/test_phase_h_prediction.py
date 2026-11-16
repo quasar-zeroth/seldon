@@ -103,6 +103,31 @@ def test_scenario_synthesis_probability_validation_rejects_bad_totals():
         raise AssertionError("Expected probability validation failure")
 
 
+def test_python_predictor_enforces_workspace_dependency_depth(tmp_path):
+    import pytest
+    from seldon.agents.prediction import NodeStatePredictor, NodeForecastInput
+    from seldon.data.models import GraphSnapshot
+    from seldon.workspace.service import WorkspaceService
+    from seldon.workspace.schemas import WorkspaceApply
+
+    factory = session_factory()
+    with factory() as db, db.begin():
+        scenario, _, nodes, _ = seed_phase_h_graph(db)
+        service = WorkspaceService(db)
+        state = service.export(scenario.id)
+        service.apply(WorkspaceApply.model_validate({
+            "scenario_id": scenario.id, "base_revision": state["revision"], "request_id": "depth", "agent": "test", "reason": "Forecast only direct dependencies",
+            "graph_scope": {"target_node_id": nodes[2].id, "max_depth": 1},
+        }))
+        with pytest.raises(ValueError, match="outside"):
+            NodeStatePredictor(db).run(NodeForecastInput(scenario_id=scenario.id, node_id=nodes[0].id, time_horizon=scenario.time_horizon))
+        _, output = PredictionCoordinator(db, config=SeldonConfig(data_dir=tmp_path)).run(PredictionCoordinator.input_from_scenario(scenario))
+        prediction = db.get(ScenarioPrediction, output.prediction_id)
+        snapshot = db.get(GraphSnapshot, prediction.calibration_result["graph_snapshot_id"])
+        assert {n["id"] for n in snapshot.snapshot["nodes"]} == {nodes[1].id, nodes[2].id}
+        assert snapshot.snapshot["scope"]["max_depth"] == 1
+
+
 def test_prediction_coordinator_creates_versioned_prediction_with_provenance(tmp_path):
     factory = session_factory()
     with factory() as db:

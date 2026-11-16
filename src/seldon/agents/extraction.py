@@ -37,6 +37,7 @@ class ExtractionInput(BaseModel):
 
 
 class NodeCandidate(BaseModel):
+    tags: list[str] = Field(default_factory=list)
     name: str
     type: NodeType
     description: str = ""
@@ -169,6 +170,7 @@ Rules:
 - Pick confidence in [0.0, 1.0]; prefer 0.6-0.85 for solid evidence,
   0.4-0.6 for weak evidence. Anything below 0.4 will be dropped.
 - aliases: list 0-3 alternative names the same node appears under.
+- tags: assign evidence-grounded category labels on every creation/update (e.g. data-center, utility, semiconductor, country:us). A physical campus is data-center; a funding programme or general AI theme is not. Do not infer location or owners without evidence.
 
 Return STRICT JSON: {"candidates": [NodeCandidate, ...]}. Aim for 8-20 candidates."""
 
@@ -332,6 +334,7 @@ def _deduplicate_candidates(candidates: list[NodeCandidate]) -> list[NodeCandida
             update={
                 "kb_entry_ids": sorted({*existing.kb_entry_ids, *candidate.kb_entry_ids}),
                 "aliases": sorted({*existing.aliases, *candidate.aliases, candidate.name}),
+                "tags": sorted({*existing.tags, *candidate.tags}),
                 "confidence": max(existing.confidence, candidate.confidence),
             }
         )
@@ -764,14 +767,14 @@ class ExtractionCoordinator(AgentBase[ExtractionInput, ExtractionOutput]):
             if existing is not None:
                 kb_ids = sorted({*(existing.kb_entry_ids or []), *candidate_kb_ids})
                 scenario_ids = sorted({*(existing.scenario_ids or []), *candidate.scenario_ids})
-                node = graph.update_node(existing.id, kb_entry_ids=kb_ids, scenario_ids=scenario_ids, current_state=candidate.current_state or existing.current_state, state_updated_at=now)
+                node = graph.update_node(existing.id, tags=sorted({*(existing.tags or []), *candidate.tags}), kb_entry_ids=kb_ids, scenario_ids=scenario_ids, current_state=candidate.current_state or existing.current_state, state_updated_at=now)
                 # Register the candidate's surface forms so later candidates that
                 # use any of them collapse onto this same node.
                 _register(node, candidate)
                 if node.id not in updated and node.id not in created:
                     updated.append(node.id)
                 continue
-            node = graph.create_node(name=candidate.name, type=candidate.type, description=candidate.description, current_state=candidate.current_state, state_updated_at=now, kb_entry_ids=candidate_kb_ids, scenario_ids=candidate.scenario_ids, stability_score=0.5, importance_score=0.0)
+            node = graph.create_node(name=candidate.name, type=candidate.type, tags=candidate.tags, description=candidate.description, current_state=candidate.current_state, state_updated_at=now, kb_entry_ids=candidate_kb_ids, scenario_ids=candidate.scenario_ids, stability_score=0.5, importance_score=0.0)
             _register(node, candidate)
             created.append(node.id)
 

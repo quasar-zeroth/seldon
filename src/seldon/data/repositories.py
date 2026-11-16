@@ -266,6 +266,8 @@ class GraphRepository:
         self.audit = audit or AuditRepository(session)
 
     def create_node(self, **values: Any) -> ERGNode:
+        from .tags import entity_tags
+        values["tags"] = entity_tags(values["name"], values.get("description", ""), values["type"], values.get("tags"))
         node = ERGNode(**values)
         self.session.add(node)
         self.session.flush()
@@ -286,6 +288,8 @@ class GraphRepository:
         if node is None:
             raise KeyError(f"erg_node not found: {id}")
         before = row_to_dict(node)
+        from .tags import entity_tags
+        values["tags"] = entity_tags(values.get("name", node.name), values.get("description", node.description), values.get("type", node.type), values.get("tags") if values.get("tags") is not None else node.tags)
         for key, value in values.items():
             setattr(node, key, value)
         self.session.flush()
