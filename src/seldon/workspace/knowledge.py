@@ -131,8 +131,13 @@ def scoped_graph(
     ]
     from .perspectives import research_context
     perspectives = research_context(db, selected_nodes, evidence) if include_perspectives else {}
+    from .cycles import research_context as cycle_context
+    from seldon.data.models import Scenario
+    scenario = db.get(Scenario, scenario_id)
+    cycles = cycle_context(db, selected_nodes, scenario.time_horizon if scenario else None, target_id=target)
     return {
         "perspectives": perspectives,
+        "cycles": cycles,
         "scope": resolved,
         "nodes": selected_nodes,
         "edges": selected_edges,
@@ -162,6 +167,8 @@ def snapshot_data(view: dict) -> dict:
         row.pop("content_embedding", None)
     return {
         **({"perspectives": view["perspectives"]} if view.get("perspectives", {}).get("claims") else {}),
+        # Linked cycle priors freeze with forecasts; their absence keeps older revisions stable.
+        **({"cycles": view["cycles"]} if view.get("cycles") else {}),
         "nodes": sorted([dump(n) for n in view["nodes"]], key=lambda x: x["id"]),
         "edges": sorted([dump(e) for e in view["edges"]], key=lambda x: x["id"]),
         "evidence": sorted(evidence, key=lambda x: x["id"]),

@@ -6,7 +6,7 @@ This outermost [AGENTS.md](AGENTS.md) contains the project-wide lookup table bel
 
 Seldon owns evidence-backed knowledge graphs and probabilistic scenario forecasts. Parallax (`../../parallax`) is the primary frontend/orchestration boundary; this package stays independent of Parallax imports. `apps/web` is an existing Next.js operating console with scenario, knowledge, graph, run, calibration, and settings workflows.
 
-Two execution paths share the relational database: built-in specialist agents use configured model/retrieval providers, while `seldon research` lets an existing coding-agent session supply research through a validated, provider-free workspace. Both preserve evidence, graph changes, forecasts, and run history. The workspace adds reusable entity identities, scoped influence DAGs, immutable forecast snapshots/reports, rerun handoffs, and topic/claim/source provenance graphs. The older `client.py`, `graph/`, and `predictions/` facade uses separate JSON files for compatibility; it is not the database scenario engine.
+Two execution paths share the relational database: built-in specialist agents use configured model/retrieval providers, while `seldon research` lets an existing coding-agent session supply research through a validated, provider-free workspace. Both preserve evidence, graph changes, forecasts, and run history. The workspace adds reusable entity identities, scoped influence DAGs, immutable forecast snapshots/reports, rerun handoffs, topic/claim/source provenance graphs, and cycle factors (historical series, harmonic/oscillator fits and composites that supply linked forecasts with model-derived priors). The older `client.py`, `graph/`, and `predictions/` facade uses separate JSON files for compatibility; it is not the database scenario engine.
 
 The project has substantial implementation and regression coverage, but empirical forecast validation, autonomous outcome monitoring, distributed execution, production database verification, and some console integration remain follow-up work. Older plans contain many already-completed items; use the status document and inspect code before treating one as a current TODO.
 
@@ -20,6 +20,17 @@ The project has substantial implementation and regression coverage, but empirica
 - Questions share one configured database and reusable entity UUIDs. Search the knowledge library before creating duplicates; do not create a database per question. For an installed Parallax service, read its service settings to locate the live database. Standalone research CLI and API database selection differ; see the workflow.
 - Forecasts distinguish evidence from assumptions and expose uncertainty, dates, sources, and unresolved questions. Research requests do not authorize trades. Pending external-agent reruns need an executing agent; creating a request does not execute research.
 - Keep credentials out of guidance and logs. Exact settings and environment behavior live in [config.py](src/seldon/config.py) and [.env.example](.env.example).
+
+## Features are agent skills
+
+Seldon is operated mainly by agents. Every user-facing capability must be usable as a skill. New and changed features meet the [skill contract](skills/AGENTS.md):
+
+- Package it in `skills/<name>/SKILL.md`, with frontmatter `name` and a trigger-oriented `description`, then a workflow, decision guidance, guardrails and troubleshooting. Link deeper theory to `docs/`.
+- Expose it through a provider-free `seldon research` command and matching authenticated `/workspace` HTTP routes. Both call one service function with shared Pydantic contracts and offer JSON output, `schema`/`catalog` discovery and `--out`.
+- Make mutations idempotent and conflict-safe (`request_id`, `base_revision`, exact replay, one transaction, append-only history). Keep default output concise, with full detail opt-in, and state what results do not establish.
+- Cover CLI and HTTP paths with offline tests. Update the skill, its directory map and this lookup in the same change as the behavior.
+
+[seldon-cycles](skills/seldon-cycles/SKILL.md) is the reference implementation. Older workflows in [agent-workflow.md](docs/agent-workflow.md) and [topic-source-graphs.md](docs/topic-source-graphs.md) still need packaging; see [project status](docs/project-status.md). `.claude/skills` links to `skills/` for Claude Code discovery.
 
 ## Project-wide lookup table
 
@@ -38,6 +49,8 @@ The project has substantial implementation and regression coverage, but empirica
 | [predictions](src/seldon/predictions/AGENTS.md) | Legacy file-backed predictions and lifecycle |
 | [workspace](src/seldon/workspace/AGENTS.md) | External-agent exchange, DAG gates, shared knowledge, scope, history, reports |
 | [workspace/perspectives](src/seldon/workspace/perspectives/AGENTS.md) | Topics, claims, source trust/leaning, affiliations, cross-layer navigation |
+| [workspace/cycles](src/seldon/workspace/cycles/AGENTS.md) | Cycle factors, dated series, harmonic/oscillator fits, composites, charts, forecast priors |
+| [skills](skills/AGENTS.md) | Agent skill packages and the skill contract every feature meets |
 | [apps](apps/AGENTS.md) | Application boundary and console entry point |
 | [apps/web](apps/web/AGENTS.md) | Next.js console architecture, scripts, API settings, UI gaps |
 | [web/app](apps/web/app/AGENTS.md) | App Router, root dashboard/layout, styles, route boundaries |
@@ -74,7 +87,7 @@ The project has substantial implementation and regression coverage, but empirica
 
 [README.md](README.md) covers installation and local services; [pyproject.toml](pyproject.toml) defines packaging and Python tools; `uv.lock` and `apps/web/package-lock.json` lock dependencies. [Dockerfile](Dockerfile), [docker-compose.yml](docker-compose.yml), [launch-lan.sh](launch-lan.sh), and [alembic.ini](alembic.ini) define local deployment/migrations. The LAN override is generated by the launcher.
 
-[docs/agent-workflow.md](docs/agent-workflow.md) is the operational research/report handoff. [docs/topic-source-graphs.md](docs/topic-source-graphs.md) explains attributed claims and source reviews. [docs/openrouter-models.md](docs/openrouter-models.md) records dated model-selection rationale, not guaranteed current availability.
+[docs/agent-workflow.md](docs/agent-workflow.md) is the operational research/report handoff. [docs/topic-source-graphs.md](docs/topic-source-graphs.md) explains attributed claims and source reviews. [docs/cycles.md](docs/cycles.md) explains cycle models, verdicts and forecast integration. [docs/openrouter-models.md](docs/openrouter-models.md) records dated model-selection rationale, not guaranteed current availability.
 
 [design.md](design.md) records console presentation goals. [prediction-system-plan.md](prediction-system-plan.md), [implementation-plan.md](implementation-plan.md), [llm-entity-pipeline-plan.md](llm-entity-pipeline-plan.md), and [scenario-chat-simplification-plan.md](scenario-chat-simplification-plan.md) are historical intent/backlog context; reconcile against implementation and [current status](docs/project-status.md).
 

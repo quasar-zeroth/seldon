@@ -141,4 +141,6 @@ def build_router(session_dependency) -> APIRouter:
 
     from .perspectives.api import build_router as perspective_router
     router.include_router(perspective_router(session_dependency))
+    from .cycles.api import build_router as cycles_router
+    router.include_router(cycles_router(session_dependency))
     return router

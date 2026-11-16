@@ -17,6 +17,7 @@ Use the [root AGENTS.md lookup table](AGENTS.md) to locate owning modules and [p
 | Agent run / model invocation | A recorded unit of agent work versus a particular provider request and its metadata. An external run need not contain a provider invocation. |
 | Job / rerun request | An operations job is dispatched to a registered local worker handler. A workspace prediction-rerun request is a durable handoff awaiting an external agent. |
 | Pipeline projection | A common view of recorded built-in and external research stages; it does not schedule or invent work. |
+| Skill | A packaged agent capability: `skills/<name>/SKILL.md` instructions over a provider-free CLI/HTTP interface with schemas, idempotent writes and offline tests. See the [skill contract](skills/AGENTS.md). |
 
 ## Evidence and graphs
 
@@ -54,6 +55,23 @@ Use the [root AGENTS.md lookup table](AGENTS.md) to locate owning modules and [p
 | Calibration / Brier / log score | Comparison of forecasts with recorded outcomes. Brier scores squared probability error; log score penalizes low probability on the realized outcome. Calculations alone do not establish reliable forecasting. |
 | Stale knowledge | Current evidence/graph/context differs from a forecast's frozen context. This flag measures change, not forecast accuracy. |
 | Report bundle | Immutable summary, detail and optional attachments generated from saved research; generation is not fresh investigation. |
+
+## Cycles
+
+| Term | Meaning in this project |
+| --- | --- |
+| Cycle factor | A recurring macro dimension for a named region, swinging between labeled poles. It is a testable hypothesis, not an assumed law. See [docs/cycles.md](docs/cycles.md). |
+| Cycle observation | A dated value with source and retrieval time: measured data, a rubric-based coding of historical records, or an explicit assumption. Revisions and withdrawals keep earlier versions. |
+| Derived (latent) factor | A hidden variable computed from standardized, weighted and lagged component factors. It is not directly observed. |
+| Fit / preferred fit | An immutable model result for one data revision and specification. Only the factor's preferred specification drives forecast context; other fits are exploratory comparisons. |
+| Harmonic model | Trend plus sin/cos waves with a searched or fixed period. Extra harmonics describe asymmetric shapes such as slow booms and fast busts. |
+| Oscillator model | Autoregressive damped-cycle dynamics. It measures persistence (inertia), damping and overshoot after shocks (whiplash), and may find no intrinsic cycle. |
+| Phase / turning point | Position of a fitted cycle relative to trend (peak, declining, trough, rising), and a projected extremum with a timing window and draw support. |
+| Red noise / Slutsky-Yule effect | Autocorrelated randomness that produces convincing fake cycles. Harmonic fits are tested against red-noise surrogates. |
+| Verdict | Summary of significance, observed cycle count and holdout skill: supported, weak, under-identified or not-oscillatory. Supported still describes only the past. |
+| Composite / alignment | A weighted combination of standardized factors. Alignment is the phase coherence of their fitted cycles (1 = reinforcing); it is not a probability. |
+| Cycle topic / relevance score | A reusable subject matched to questions by entity UUIDs or tags, and a 0-1 judged strength (with direction, channel and horizon) of a cycle's bearing on it. Cycles at or above the floor enter matched questions' context. `target_score` counts only topics containing the forecast target. |
+| Cycle prior | Outlook of a cycle a question inherits through entity links or topic relevance, frozen with forecasts and recorded by agents as assumption evidence, never as an observation. |
 
 ## Topics, claims and provenance
 

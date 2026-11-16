@@ -15,6 +15,7 @@ Agents with shell or HTTP tools supply research and semantic reasoning using the
 | `reruns.py` | Durable external-agent forecast requests, completion and history combining external forecasts with Python prediction versions. |
 | `reports.py` | Immutable summary/detailed report bundles and optional text attachments stored in `AgentRun` rows. |
 | [perspectives/](perspectives/AGENTS.md) | Attributed claims, topic/source graphs, scoped trust/leaning and explained cross-layer connections. |
+| [cycles/](cycles/AGENTS.md) | Cycle factors, dated series, deterministic harmonic/oscillator fits, composites, SVG charts and linked forecast priors. |
 
 Start questions with `StartRequest` through CLI, HTTP or the GUI proxy. Exports include a derived handoff identifying the scenario and actual database; host-specific instructions stay outside the knowledge revision. Markdown leads with recorded findings, gaps and node assessments before the complete audit payload. Current-state investigations may stop with sourced findings and gaps without fabricating a forecast.
 
@@ -25,6 +26,8 @@ New research forecasts construct evidence-backed lower/upper hot takes before ce
 Search the library and reuse UUIDs/provenance before creating records; tag creates/updates and distinguish physical campuses from programmes. Shared factual edits use `allow_shared_updates` after affected uses are reviewed. This is an auditable intent flag, not an extra user-approval requirement. Preserve memberships and frozen forecast snapshots. GUI and prediction agents use the same scoped view; take scope bounds from `GraphScope`.
 
 Accepted external stages are recorded atomically; older runs are projected from recorded input/output. Never invent completion or duration. Pending rerun requests need an executing agent and are not completed forecasts. Reports derive only from saved scoped research, preserve dated forecast versions/unknowns, and do not claim fresh searches. Generated report history is independent of submitted attachment limits and must not be truncated to fit them. New perspective assessments enter current context/new snapshots without overwriting old reports or establishing truth automatically.
+
+`knowledge.scoped_graph` adds cycle priors for factors/composites linked to scoped entity UUIDs or selected by the topic relevance lookup; snapshots and revisions omit the key when nothing applies. Handoffs and rerun prompts include the shared cycle guidance: use every inherited cycle, and add cycles when patterns emerge. New workspace capabilities ship as skills (CLI + HTTP + `skills/<name>/SKILL.md`); see the [skill contract](../../../skills/AGENTS.md).
 
 Verification: [test_agent_workspace.py](../../../tests/unit/test_agent_workspace.py), [test_workspace_reports.py](../../../tests/unit/test_workspace_reports.py) and perspective tests exercise real local database transactions without providers/network.
 

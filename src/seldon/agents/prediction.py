@@ -568,7 +568,14 @@ class ScenarioSynthesizer(AgentBase[ScenarioSynthesisInput, ScenarioSynthesisOut
                                 "A missing source publication date means unknown; recorded_at is a database ingestion date, not a source date.\n"
                                 f"Claim/source context: {json.dumps(view.get('perspectives', {}), ensure_ascii=False)}\n"
                                 "Trust scores are subjective. Discuss unresolved contradictions and do not count syndicated sources as independent.\n"
-                                f"Node forecasts: {[f.model_dump(mode='json') for f in payload.node_forecasts]}\n"
+                                + (
+                                    "Cycle priors (model-derived curve fits, not observations), ordered by relevance to this question's topics. "
+                                    "Use every relevant cycle: state its phase or projection at the horizon, verdict and relevance, and let only supported, materially relevant cycles shift probabilities. "
+                                    "If the evidence shows a recurring pattern no listed cycle covers, including short or unconventional rhythms, name it as a candidate cycle in uncertainties so an agent can add and test it: "
+                                    f"{json.dumps(view['cycles'], ensure_ascii=False)}\n"
+                                    if view.get("cycles") else ""
+                                )
+                                + f"Node forecasts: {[f.model_dump(mode='json') for f in payload.node_forecasts]}\n"
                                 f"Traversal: {payload.traversal.model_dump(mode='json')}\n"
                                 f"Instability: {payload.instability.model_dump(mode='json')}\n"
                                 f"Base-rate priors: {payload.base_rates.model_dump(mode='json') if payload.base_rates else {}}"

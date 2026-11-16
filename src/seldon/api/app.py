@@ -402,7 +402,10 @@ def create_app(
 
     @app.exception_handler(RequestValidationError)
     async def validation_exception_handler(_: Request, exc: RequestValidationError) -> JSONResponse:
-        return _error("validation_error", "Request validation failed", details=exc.errors(), http_status=status.HTTP_422_UNPROCESSABLE_ENTITY)
+        # Model-validator errors carry the raw exception in ctx; stringify it so the 422 is serializable.
+        from fastapi.encoders import jsonable_encoder
+
+        return _error("validation_error", "Request validation failed", details=jsonable_encoder(exc.errors(), custom_encoder={Exception: str}), http_status=status.HTTP_422_UNPROCESSABLE_ENTITY)
 
     @app.exception_handler(KeyError)
     async def key_error_handler(_: Request, exc: KeyError) -> JSONResponse:

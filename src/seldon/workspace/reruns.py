@@ -18,6 +18,7 @@ from seldon.data.models import (
 from seldon.data.repositories import AgentRunRepository, row_to_dict
 from .knowledge import knowledge_revision, scoped_graph
 from .cases import CASE_GENERATION_GUIDANCE
+from .cycles.catalog import CYCLE_GUIDANCE
 
 
 def list_requests(db: Session, scenario_id: str | None = None) -> list[dict]:
@@ -78,6 +79,7 @@ def request_prediction(
         f"research review with prediction_request_id={id}, a new request_id and the latest base_revision. "
         "Preserve the resolution rule for comparable forecasts; disclose any change in horizon or branch meanings. "
         + CASE_GENERATION_GUIDANCE + " "
+        + CYCLE_GUIDANCE + " "
         "Do not copy the previous probabilities without fresh reasoning. Do not use provider-backed endpoints or trade."
     )
     row = AgentRunRepository(db).create(

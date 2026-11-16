@@ -6,9 +6,9 @@ Expose persisted backend truth through typed inputs, explicit errors and auditab
 
 - `app.py`: application/session/client factories, lifespan and authentication middleware; scenario/KB/graph/prediction CRUD, specialist execution, job chaining, run timelines/SSE, analytics, exports, model configuration and operations endpoints.
 - `dependencies.py`: cached standalone configuration, session and model-client dependency factories. `create_app` also accepts injected dependencies for tests and hosts.
-- `__init__.py`: package marker. Workspace and perspective routers are implemented in [workspace/](../workspace/AGENTS.md) and mounted by `create_app`.
+- `__init__.py`: package marker. Workspace, perspective and cycle routers are implemented in [workspace/](../workspace/AGENTS.md) and mounted by `create_app`.
 
-Direct specialist routes execute coordinators in the request transaction; `/jobs/` routes use the durable in-process queue. Do not infer asynchronous execution from an HTTP status alone. Merge-proposal approve/reject routes currently record audit decisions; they do not themselves execute a graph merge. Derive the complete route contract from `app.py` and generated OpenAPI.
+Request-validation 422 responses stringify exception context from model validators so provenance errors stay JSON-serializable. Direct specialist routes execute coordinators in the request transaction; `/jobs/` routes use the durable in-process queue. Do not infer asynchronous execution from an HTTP status alone. Merge-proposal approve/reject routes currently record audit decisions; they do not themselves execute a graph merge. Derive the complete route contract from `app.py` and generated OpenAPI.
 
 Provider-free workspace routes share host sessions/authentication and must not invoke the built-in model pipeline. Keep read/export access useful without provider keys and model health separate from API/database availability. Preserve local-versus-production authentication configuration. Coordinate client contracts with [apps/web](../../../apps/web/AGENTS.md).
 

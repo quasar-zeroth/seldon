@@ -20,6 +20,8 @@ The gold replay uses checked-in dated evidence and agent judgments; it performs 
 
 Entities carry normalized tags; `research --db PATH library --tag data-center` finds reusable campuses across questions. `research --db PATH reports generate SCENARIO_ID --request-id UNIQUE_ID` saves an immutable summary/detailed bundle, optionally with agent-authored sections and CSV/JSON attachments. Use `research reports list` and `research reports download --help` to retrieve it, or Parallax's **Reports** page. Reports are stored in the same database as the graph; see the [agent workflow](docs/agent-workflow.md) for schemas, pagination and migration instructions.
 
+Recurring macro cycles (credit and speculation, war intensity, globalization, generational and political moods) are modeled with `research --db PATH cycles ...`: load dated series, fit and test harmonic or inertia/whiplash oscillator models, combine factors, render SVG charts, and link cycle priors to forecasts. Agents follow the [seldon-cycles skill](skills/seldon-cycles/SKILL.md); models and verdicts are explained in [docs/cycles.md](docs/cycles.md).
+
 ## Optional built-in model pipeline
 
 The built-in semantic coordinators still require a provider. Set credentials outside git using `.env.example` as the configuration reference. Supported provider presets, current model IDs, fallback policy, and environment overrides live in `src/seldon/config.py`; derive them there rather than relying on copied model lists.

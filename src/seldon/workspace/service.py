@@ -109,6 +109,7 @@ class WorkspaceService:
         data = {
             "schema_version": 1,
             **({"perspectives": view["perspectives"]} if view.get("perspectives", {}).get("claims") else {}),
+            **({"cycles": view["cycles"]} if view.get("cycles") else {}),
             "scenario": _row(scenario),
             "evidence": sorted(evidence, key=lambda x: x["id"]),
             "nodes": sorted(
@@ -188,6 +189,7 @@ class WorkspaceService:
         else:
             access = "Use this server's authenticated /workspace HTTP interface"
         from .cases import CASE_GENERATION_GUIDANCE
+        from .cycles.catalog import CYCLE_GUIDANCE
 
         data["research_handoff"] = (
             f"Read {repository / 'AGENTS.md'} and {repository / 'docs/agent-workflow.md'}. "
@@ -198,6 +200,7 @@ class WorkspaceService:
             "Assign evidence-grounded tags on every entity creation/update (data-center for physical campuses, plus country/region and roles where established). Search library with --tag data-center and paginate until total is covered. When reports are requested, generate and store summary and detailed versions with research reports generate. Define a question target and upstream dependency depth, gather sources with your current agent's "
             "search tools, and persist material rounds with research apply. Distinguish observations, "
             "assumptions, and unknowns. Inspect perspectives export for conflicting claims, source affiliations, and dated trust/leaning assessments. Use perspectives catalog and perspectives connections to navigate entity/topic/claim/source paths, preserving explicit identities and relationship direction. Use perspectives apply to add sourced judgments; never treat repeated coverage as independent confirmation or an observation as a verified fact. Reconcile disputed or superseded claims explicitly in forecasts. Investigate counterevidence and record coverage and remaining gaps. "
+            + CYCLE_GUIDANCE + " Procedure: skills/seldon-cycles/SKILL.md. "
             "For a current-state investigation, save a research summary without inventing a forecast. "
             "If a prediction is requested, define a future resolution date and measurable criteria, "
             "assess all scoped nodes, and save reviewed forecast branches. "
@@ -791,6 +794,7 @@ def render_markdown(data: dict) -> str:
         ]:
             lines.append(f"- {item}")
         lines.extend(["", f"Base rate: {details.get('base_rate', 'Not recorded')}", ""])
+    lines.extend(cycles_markdown(data.get("cycles")))
     if data["nodes"]:
         lines.extend(["## Knowledge and evidence by node", ""])
         for node in data["nodes"]:
@@ -823,7 +827,7 @@ def render_markdown(data: dict) -> str:
         )
         lines.append(f"- {source}: {entry['content']}")
     lines.append("")
-    for label in ("dag", "evidence", "nodes", "edges", "predictions", "runs", "perspectives"):
+    for label in ("dag", "evidence", "nodes", "edges", "predictions", "runs", "perspectives", *(("cycles",) if data.get("cycles") else ())):
         lines.extend(
             [
                 f"## {label.replace('_', ' ').title()}",
@@ -835,3 +839,36 @@ def render_markdown(data: dict) -> str:
             ]
         )
     return "\n".join(lines)
+
+
+def cycles_markdown(context: dict | None) -> list[str]:
+    """Readable summary of linked cycle priors; empty when none are linked."""
+    if not context:
+        return []
+    lines = [
+        "## Cycle priors",
+        "",
+        "Model-derived structural priors from historical curve fits, not observations. Only 'supported' verdicts beat red-noise and holdout checks.",
+        "",
+        f"Evaluated at: {context.get('at') or 'last observation (no horizon date found)'}",
+        "",
+        "| Factor | Verdict | Period (years) | Phase | Projection | Next turning point |",
+        "| --- | --- | --- | --- | --- | --- |",
+    ]
+    for factor in context.get("factors", []):
+        fit = factor.get("fit") or {}
+        cycles = fit.get("cycles") or ([fit["dynamics"]] if fit.get("dynamics") else [])
+        period = ", ".join(f"{c['period_years']:.3g}" for c in cycles if c.get("period_years")) or "—"
+        at = factor.get("at") or {}
+        phase = ", ".join(p["label"] for p in at.get("phases", [])) or "—"
+        projection = f"{at['mean']:.4g} [{at['lower']:.4g}, {at['upper']:.4g}] {factor['units']}" if at.get("mean") is not None and at.get("lower") is not None else at.get("relation", "—")
+        upcoming = at.get("next_turning_points") or fit.get("upcoming_turning_points") or []
+        turning = f"{upcoming[0]['label']} {upcoming[0]['date']}" if upcoming else "—"
+        name = f"{factor['name']} ({factor['region']})".replace("|", "\\|")
+        lines.append(f"| {name} | {fit.get('verdict', factor.get('fit_status'))} | {period} | {phase} | {projection} | {turning} |")
+    for composite in context.get("composites", []):
+        at = composite.get("at") or {}
+        if at.get("value") is not None:
+            lines.append(f"| Composite: {composite['name']} | — | — | alignment {at.get('alignment')} ({at.get('shared_phase') or '—'}) | {at['value']:.3g} z | — |")
+    lines.append("")
+    return lines

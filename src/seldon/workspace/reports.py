@@ -210,6 +210,10 @@ def generate_report(db: Session, scenario_id: str, request: ReportRequest) -> di
     lines += ["- " + gap for gap in latest.get("remaining_gaps", [])] or [
         "No explicit gaps recorded; this is not proof of complete coverage."
     ]
+    if w.get("cycles"):
+        from .service import cycles_markdown
+
+        lines += ["", *cycles_markdown(w["cycles"])]
     perspectives = w.get("perspectives") or {}
     if perspectives.get("claims"):
         lines += ["", "## Claim and source review", "", f"{len(perspectives['claims'])} attributed claims and {len(perspectives['assessments'])} dated assessments are attached to this snapshot. Imported observations are not automatically verified facts. Trust percentages are subjective judgments, not calibrated probabilities. Conflicting claims, corrections, provenance and assessment history appear in the detailed report.", ""]
@@ -281,6 +285,8 @@ def generate_report(db: Session, scenario_id: str, request: ReportRequest) -> di
             "```",
             "",
         ]
+    if w.get("cycles"):
+        detailed += ["## Cycle fits, diagnostics and evidence templates", "", "```json", json.dumps(w["cycles"], indent=2, ensure_ascii=False), "```", ""]
     if perspectives.get("claims"):
         detailed += ["## Attributed claims, source affiliations and assessment history", "", "```json", json.dumps(perspectives, indent=2, ensure_ascii=False), "```", ""]
     contents = [
