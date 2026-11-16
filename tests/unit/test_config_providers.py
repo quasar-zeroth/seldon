@@ -15,14 +15,19 @@ def test_openrouter_config_is_alias_of_llm_provider_config():
     assert OpenRouterConfig is LLMProviderConfig
 
 
-def test_nvidia_preset_has_qwen_models_and_nim_endpoint():
+def test_nvidia_preset_has_expected_models_and_nim_endpoint():
     preset = provider_preset("nvidia")
     assert preset.provider == "nvidia"
     assert preset.base_url == "https://integrate.api.nvidia.com/v1"
     assert preset.api_key_env == "NVIDIA_API_KEY"
-    assert preset.model_for_profile("balanced") == "qwen/qwen3.5-397b-a17b"
-    assert preset.model_for_profile("reasoning") == "qwen/qwen3.5-397b-a17b"
+    assert preset.model_for_profile("balanced") == "deepseek-ai/deepseek-v4-pro"
+    assert preset.model_for_profile("reasoning") == "deepseek-ai/deepseek-v4-pro"
     assert preset.model_for_profile("fast") == "qwen/qwen3.5-122b-a10b"
+    assert preset.fallback_models == [
+        "z-ai/glm-5.1",
+        "minimaxai/minimax-m3",
+        "nvidia/nemotron-3-ultra-550b-a55b",
+    ]
     # NIM does not use OpenRouter attribution headers.
     assert preset.app_name is None
 
@@ -31,7 +36,7 @@ def test_openrouter_preset_drops_nonexistent_fast_model():
     preset = provider_preset("openrouter")
     assert preset.provider == "openrouter"
     assert preset.base_url == "https://openrouter.ai/api/v1"
-    assert preset.fast_model == "meta-llama/llama-3.3-70b-instruct:free"
+    assert preset.fast_model == "qwen/qwen3.8-27b:free"
     # The non-existent deepseek free id must not survive anywhere.
     all_ids = [preset.default_model, preset.fast_model, preset.reasoning_model, *preset.fallback_models]
     assert not any("deepseek-v4-flash:free" in m for m in all_ids)
@@ -64,7 +69,7 @@ def test_config_from_env_honors_explicit_provider(monkeypatch):
     monkeypatch.setenv("SELDON_LLM_PROVIDER", "nvidia")
     cfg = config_from_env()
     assert cfg.llm.provider == "nvidia"
-    assert cfg.llm.default_model == "qwen/qwen3.5-397b-a17b"
+    assert cfg.llm.default_model == "deepseek-ai/deepseek-v4-pro"
     assert cfg.llm.api_key_env == "NVIDIA_API_KEY"
 
     monkeypatch.setenv("SELDON_LLM_PROVIDER", "openrouter")

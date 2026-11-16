@@ -30,13 +30,13 @@ class LLMProviderConfig(BaseModel):
     site_url: str | None = None  # OpenRouter HTTP-Referer header; ignored by NIM
     extra_headers: dict[str, str] = Field(default_factory=dict)
     timeout_seconds: float = 90
-    default_model: str = "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free"
-    fast_model: str = "meta-llama/llama-3.3-70b-instruct:free"
-    reasoning_model: str = "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free"
+    default_model: str = "qwen/qwen3.8-27b:free"
+    fast_model: str = "qwen/qwen3.8-27b:free"
+    reasoning_model: str = "nvidia/nemotron-3-ultra-550b-a55b:free"
     embedding_model: str = "text-embedding-3-small"
     fallback_models: list[str] = Field(default_factory=lambda: [
-        "poolside/laguna-m.1:free",
-        "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
+        "nvidia/nemotron-3-super-120b-a12b:free",
+        "qwen/qwen3.8-27b:free",
     ])
 
     def model_for_profile(self, profile: str) -> str:
@@ -60,24 +60,25 @@ _PROVIDER_PRESETS: dict[str, dict[str, Any]] = {
         "base_url": "https://openrouter.ai/api/v1",
         "api_key_env": "OPENROUTER_API_KEY",
         "app_name": "The Seldon Project",
-        "default_model": "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
-        "fast_model": "meta-llama/llama-3.3-70b-instruct:free",
-        "reasoning_model": "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
+        "default_model": "qwen/qwen3.8-27b:free",
+        "fast_model": "qwen/qwen3.8-27b:free",
+        "reasoning_model": "nvidia/nemotron-3-ultra-550b-a55b:free",
         "fallback_models": [
-            "poolside/laguna-m.1:free",
-            "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
+            "nvidia/nemotron-3-super-120b-a12b:free",
+            "qwen/qwen3.8-27b:free",
         ],
     },
     "nvidia": {
         "base_url": "https://integrate.api.nvidia.com/v1",
         "api_key_env": "NVIDIA_API_KEY",
         "app_name": None,
-        "default_model": "qwen/qwen3.5-397b-a17b",
+        "default_model": "deepseek-ai/deepseek-v4-pro",
         "fast_model": "qwen/qwen3.5-122b-a10b",
-        "reasoning_model": "qwen/qwen3.5-397b-a17b",
+        "reasoning_model": "deepseek-ai/deepseek-v4-pro",
         "fallback_models": [
-            "qwen/qwen3.5-122b-a10b",
-            "qwen/qwen3-next-80b-a3b-instruct",
+            "z-ai/glm-5.1",
+            "minimaxai/minimax-m3",
+            "nvidia/nemotron-3-ultra-550b-a55b",
         ],
     },
 }

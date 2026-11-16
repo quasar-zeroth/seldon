@@ -62,13 +62,12 @@ def test_live_openrouter_complete_json_uses_default_and_fallback_models():
 
     assert result["ok"] is True
     assert result["label"] == "openrouter-live"
-    assert client.config.default_model == "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free"
-    assert client.config.fast_model == "deepseek/deepseek-v4-flash:free"
-    assert client.config.reasoning_model == "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free"
+    assert client.config.default_model == "qwen/qwen3.8-27b:free"
+    assert client.config.fast_model == "qwen/qwen3.8-27b:free"
+    assert client.config.reasoning_model == "nvidia/nemotron-3-ultra-550b-a55b:free"
     assert client.config.fallback_models == [
-        "deepseek/deepseek-v4-flash:free",
-        "poolside/laguna-m.1:free",
-        "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
+        "nvidia/nemotron-3-super-120b-a12b:free",
+        "qwen/qwen3.8-27b:free",
     ]
 
 
