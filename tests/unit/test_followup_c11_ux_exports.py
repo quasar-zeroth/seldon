@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from fastapi.testclient import TestClient
+import pytest
 
 from seldon.api.app import create_app
 from seldon.config import SeldonConfig
@@ -16,13 +17,19 @@ def make_client_with_session():
     return TestClient(app), session_factory
 
 
-def test_scenario_report_exports_markdown_json_and_html():
+@pytest.mark.parametrize("bounds_path", ["builtin", "workspace", "legacy"])
+def test_scenario_report_exports_markdown_json_and_html(bounds_path):
     client, session_factory = make_client_with_session()
     with session_factory() as db, db.begin():
         scenario = Scenario(id="scenario-ux", name="UX report", target_question="Will exports work?", time_horizon="Q4", description="Export coverage")
         kb = KBEntry(id="kb-ux", content="Evidence detail should be included.", source_name="Fixture", source_type="note")
         node = ERGNode(id="node-ux", name="Important node", type="metric", scenario_ids=["scenario-ux"], importance_score=0.91)
         prediction = ScenarioPrediction(id="prediction-ux", scenario_id="scenario-ux", statement="Exports should include context.", probabilities={"yes": 0.7}, confidence=0.7, assumptions=["API works"], evidence_links=["kb-ux"], status="active")
+        bounds = {side: {"outcome": "Stress <script>text</script>", "rationale": "Conditional drivers", "assumptions": ["Joint premises"], "evidence_ids": ["kb-ux"], "value": None} for side in ("lower", "upper")}
+        if bounds_path == "builtin":
+            prediction.calibration_result = {"case_bounds": bounds}
+        elif bounds_path == "workspace":
+            prediction.calibration_result = {"forecast": {"case_bounds": bounds}}
         db.add_all([scenario, kb, node, prediction])
 
     markdown = client.get("/scenarios/scenario-ux/report").text
@@ -38,6 +45,11 @@ def test_scenario_report_exports_markdown_json_and_html():
     html = client.get("/scenarios/scenario-ux/report?format=html")
     assert html.headers["content-type"].startswith("text/html")
     assert "<h1>UX report</h1>" in html.text
+    if bounds_path != "legacy":
+        assert markdown.index("Hot takes: conditional stress bounds") < markdown.index("## Probabilities")
+        assert "<h3>Hot takes: conditional stress bounds</h3>" in html.text
+        assert "&lt;script&gt;text&lt;/script&gt;" in html.text
+        assert "<script>" not in html.text
 
 
 def test_merge_proposal_inbox_tracks_pending_and_decisions():

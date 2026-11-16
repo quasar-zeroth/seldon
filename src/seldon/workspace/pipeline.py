@@ -117,6 +117,7 @@ def workspace_steps(request: dict, output: dict) -> list[dict]:
             f"{len(forecast.get('branches', []))} forecast branches; probability checks passed",
             {
                 "statement": forecast.get("statement"),
+                "case_bounds": forecast.get("case_bounds"),
                 "branches": forecast.get("branches", []),
             },
         )

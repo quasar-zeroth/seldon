@@ -14,7 +14,7 @@ These tests combine deterministic unit checks with real SQLite transactions and 
 | `test_phase_e_*`, `test_phase_f_*`, `test_phase_g_*` | Context gathering, extraction, entity resolution, evidence-backed graph construction, and convergence. |
 | `test_phase_h_*`, `test_phase_i_*`, `test_phase_j_*` | Forecast validation/activation, history, feedback/calibration, and advanced intelligence. |
 | `test_phase_k_operations.py`, `test_followup_c11_production_ops.py`, `test_followup_c11_durable_orchestration.py` | Authentication, jobs, backups/restore, retention, health/metrics, leases/recovery, timelines, and SSE. |
-| `test_agent_workspace.py` | External-agent apply/export/replay, shared entities, dependency scope, frozen forecasts, reruns, gates, stale revisions, rollback, CLI/API, and Python-agent interoperability. |
+| `test_agent_workspace.py` | External-agent apply/export/replay, shared entities, dependency scope, frozen forecasts and hot-take bounds, reruns, gates, stale revisions, rollback, CLI/API, and Python-agent interoperability. |
 | `test_workspace_reports.py`, `test_perspectives.py` | Saved report snapshots and tags; claims, assessments, source relationships, provenance, history, and explained connections. |
 | `test_config_providers.py`, `test_openrouter_client.py`, `test_followup_c11_agent_llm.py`, `test_followup_c11_model_specialists.py` | Provider configuration, payload/retry/schema contracts, invocation metadata, repair/escalation, and specialist LLM behavior. |
 | `test_followup_c11_external_retrieval.py`, `test_followup_c11_retrieval_depth.py`, `test_followup_c11_embeddings.py` | Mocked search/fetch/embedding contracts, provenance, SQLite search fallback, and pgvector SQL text. |

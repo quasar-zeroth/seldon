@@ -43,6 +43,8 @@ def test_feedback_coordinator_resolves_prediction_records_outcome_and_calibratio
     with factory() as db:
         with db.begin():
             scenario, prediction = seed_prediction(db)
+            original_context = {"case_bounds": {"lower": {"value": 2000}, "upper": {"value": 6000}}, "graph_snapshot_id": "frozen-context"}
+            prediction.calibration_result = original_context
             run_id, output = FeedbackCoordinator(db, config=SeldonConfig(data_dir=tmp_path)).run(
                 FeedbackInput(
                     prediction_id=prediction.id,
@@ -61,6 +63,8 @@ def test_feedback_coordinator_resolves_prediction_records_outcome_and_calibratio
         assert resolved.status == "resolved"
         assert resolved.outcome["resolved_outcome_key"] == "bear"
         assert resolved.calibration_result["probability_assigned"] == 0.1
+        assert resolved.calibration_result["case_bounds"] == original_context["case_bounds"]
+        assert resolved.calibration_result["graph_snapshot_id"] == "frozen-context"
         assert output.outcome_check.probability_assigned == 0.1
         assert output.root_cause.failed_assumptions == ["No unobserved shock dominates the listed key drivers."]
         assert output.calibration.resolved_predictions == 1

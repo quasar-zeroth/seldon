@@ -13,9 +13,10 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import select
 
-from seldon.data.models import BaseRateEvidence, ERGEdge, ERGNode, KBEntry, Scenario, ScenarioPrediction, ScenarioVersion
+from seldon.data.models import BaseRateEvidence, ERGEdge, ERGNode, KBEntry, Scenario, ScenarioPrediction, ScenarioVersion, Source
 from seldon.data.repositories import AuditRepository, GraphRepository, MarkdownExporter, ScenarioRepository
 from seldon.llm.openrouter import LLMAuthenticationError
+from seldon.workspace.cases import CASE_GENERATION_GUIDANCE, CaseBounds
 from seldon.workspace.knowledge import freeze_graph, knowledge_revision, scoped_graph
 
 from .advanced import AdversarialRedTeamAgent, AdvancedIntelligenceInput, RedTeamOutput
@@ -160,6 +161,8 @@ class ScenarioSynthesisOutput(BaseModel):
     scope: str = ""
     timeframe: str = ""
     resolution_criteria: str
+    # Historical runs remain readable; new model-generated forecasts require bounds.
+    case_bounds: CaseBounds | None = None
     outcomes: list[SynthesizedOutcome]
     probabilities: dict[str, float]
     confidence: float = Field(ge=0.0, le=1.0)
@@ -173,6 +176,10 @@ class ScenarioSynthesisOutput(BaseModel):
         if abs(total - 1.0) > 0.01:
             raise ValueError(f"scenario probabilities must sum to 1.0, got {total:.3f}")
         return self
+
+
+class GeneratedScenarioSynthesis(ScenarioSynthesisOutput):
+    case_bounds: CaseBounds
 
 
 class ActivationGateOutput(BaseModel):
@@ -223,9 +230,42 @@ def _normalise_probabilities(values: dict[str, float]) -> dict[str, float]:
 
 
 SCENARIO_SYNTHESIZER_SYSTEM = """You are The Seldon Project's Scenario Synthesizer.
-Synthesize 3-7 coherent, mutually distinct forecast scenarios from node forecasts, traversal results, and instability analysis.
+First construct case_bounds.lower and case_bounds.upper from the supplied scoped evidence.
+Then synthesize 3-7 coherent, mutually distinct forecast scenarios from these stress bounds, node forecasts, traversal results, and instability analysis.
 Probabilities must sum to 1.0, confidence must reflect evidence quality, and assumptions/drivers must be auditable.
-Do not force bull/base/bear labels unless they are the best natural scenario names. Return only JSON matching the ScenarioSynthesisOutput schema."""
+Do not force bull/base/bear labels unless they are the best natural scenario names.
+Explain in each outcome's reasoning_trace which extreme assumptions moderate or fail to produce that case.
+Cite only supplied evidence IDs in each bound's evidence_ids and in evidence_links.
+Return only JSON matching the GeneratedScenarioSynthesis schema, with case_bounds before outcomes.
+""" + CASE_GENERATION_GUIDANCE
+
+
+def _validate_synthesis_scope(synthesis: ScenarioSynthesisOutput, view: dict) -> None:
+    evidence_ids = {entry.id for entry in view["evidence"]}
+    bound_evidence = (
+        set(synthesis.case_bounds.lower.evidence_ids) | set(synthesis.case_bounds.upper.evidence_ids)
+        if synthesis.case_bounds else set()
+    )
+    if (
+        not set(synthesis.key_drivers) <= {node.id for node in view["nodes"]}
+        or not (set(synthesis.evidence_links) | bound_evidence) <= evidence_ids
+    ):
+        raise ValueError("Prediction synthesis cites entities or evidence outside the configured dependency scope")
+
+
+def _bound_assumptions(bounds: CaseBounds) -> list[str]:
+    visible = [
+        "Hot takes are conditional stress bounds, not guaranteed extrema or additional probability mass; "
+        "tail risks can lie beyond this envelope."
+    ]
+    for label, bound in (("lower", bounds.lower), ("upper", bounds.upper)):
+        value = f" Numeric value: {bound.value}." if bound.value is not None else ""
+        visible.append(
+            f"Hot take {label}: {bound.outcome}.{value} Rationale: {bound.rationale} "
+            f"Conditional assumptions: {'; '.join(bound.assumptions)}. "
+            f"Evidence: {', '.join(bound.evidence_ids)}."
+        )
+    return visible
 
 
 NODE_STATE_PREDICTOR_SYSTEM = """You are The Seldon Project's Node State Predictor.
@@ -488,16 +528,45 @@ class ScenarioSynthesizer(AgentBase[ScenarioSynthesisInput, ScenarioSynthesisOut
         scenario = self.db.get(Scenario, payload.scenario_id)
         if scenario is None:
             raise KeyError(f"scenario not found: {payload.scenario_id}")
+        view = scoped_graph(self.db, payload.scenario_id)
+        scoped_evidence_ids = {entry.id for entry in view["evidence"]}
         if self.llm_client is not None:
+            # Supply the facts and their provenance, not just node-derived projections.
+            evidence = []
+            for entry in view["evidence"]:
+                source = self.db.get(Source, entry.source_id) if entry.source_id else None
+                metadata = (source.metadata_ or {}) if source else {}
+                evidence.append({
+                    "id": entry.id,
+                    "content": entry.content,
+                    "source_type": entry.source_type,
+                    "original_snippet": entry.original_snippet,
+                    "source_name": entry.source_name,
+                    "source_url": entry.source_url,
+                    "source_published_at": (metadata.get("raw_document") or {}).get("published_at")
+                    or (metadata.get("search_result") or {}).get("published_at"),
+                    "valid_from": entry.valid_from,
+                    "valid_until": entry.valid_until,
+                    "recorded_at": entry.created_at,
+                })
+
+            class ScopedScenarioSynthesis(GeneratedScenarioSynthesis):
+                @model_validator(mode="after")
+                def scoped_citations(self) -> "ScopedScenarioSynthesis":
+                    _validate_synthesis_scope(self, view)
+                    return self
+
             try:
                 result = self.llm_complete_json(
                     [
                         {
                             "role": "user",
                             "content": (
-                                "Synthesize forecast scenarios from this prediction context.\n"
+                                "Build the extreme lower and upper hot takes FIRST, then derive evidence-informed forecast cases.\n"
                                 f"Scenario: {scenario.name}\nQuestion: {payload.question}\nTimeframe: {payload.timeframe or scenario.time_horizon}\n"
-                                f"Claim/source context: {json.dumps(scoped_graph(self.db, payload.scenario_id).get('perspectives', {}), ensure_ascii=False)}\n"
+                                f"Scoped evidence: {json.dumps(evidence, default=str, ensure_ascii=False)}\n"
+                                "A missing source publication date means unknown; recorded_at is a database ingestion date, not a source date.\n"
+                                f"Claim/source context: {json.dumps(view.get('perspectives', {}), ensure_ascii=False)}\n"
                                 "Trust scores are subjective. Discuss unresolved contradictions and do not count syndicated sources as independent.\n"
                                 f"Node forecasts: {[f.model_dump(mode='json') for f in payload.node_forecasts]}\n"
                                 f"Traversal: {payload.traversal.model_dump(mode='json')}\n"
@@ -508,12 +577,19 @@ class ScenarioSynthesizer(AgentBase[ScenarioSynthesisInput, ScenarioSynthesisOut
                     ],
                     run_id=run_id,
                     system=SCENARIO_SYNTHESIZER_SYSTEM,
-                    schema=ScenarioSynthesisOutput,
+                    schema=ScopedScenarioSynthesis,
                     repair_retries=1,
                     min_confidence=0.4,
                     escalation_profiles=("reasoning",),
                 )
-                return ScenarioSynthesisOutput.model_validate(result)
+                synthesis = GeneratedScenarioSynthesis.model_validate(result)
+                synthesis.assumptions.extend(_bound_assumptions(synthesis.case_bounds))
+                synthesis.evidence_links = sorted(
+                    set(synthesis.evidence_links)
+                    | set(synthesis.case_bounds.lower.evidence_ids)
+                    | set(synthesis.case_bounds.upper.evidence_ids)
+                )
+                return synthesis
             except LLMAuthenticationError:
                 raise
             except Exception as exc:
@@ -549,6 +625,30 @@ class ScenarioSynthesizer(AgentBase[ScenarioSynthesisInput, ScenarioSynthesisOut
             "No unobserved shock dominates the listed key drivers.",
             "Scenario probabilities are anchored against available base-rate priors before activation.",
         ]
+        case_bounds = None
+        if scoped_evidence_ids:
+            illustrative = {
+                "rationale": "Unresearched illustrative development fallback; no compounding, "
+                "counterevidence or assumption compatibility analysis has been performed.",
+                "evidence_ids": sorted(scoped_evidence_ids),
+                "value": None,
+            }
+            case_bounds = CaseBounds.model_validate({
+                "lower": {
+                    **illustrative,
+                    "outcome": f"Illustrative all-goes-wrong stress case for: {scenario.target_question}",
+                    "assumptions": ["All adverse driver moves compound; compatibility is unverified."],
+                },
+                "upper": {
+                    **illustrative,
+                    "outcome": f"Illustrative all-goes-right stress case for: {scenario.target_question}",
+                    "assumptions": ["All supportive driver moves compound; compatibility is unverified."],
+                },
+            })
+            evidence_ids.update(scoped_evidence_ids)
+            assumptions.extend(_bound_assumptions(case_bounds))
+        else:
+            assumptions.append("Hot takes unavailable: unresearched development fallback has no scoped evidence to cite.")
         outcomes = [
             SynthesizedOutcome(outcome=f"Bull case for: {scenario.target_question}", probability=probabilities["bull"], confidence=confidence, key_drivers=driver_ids, key_assumptions=assumptions[:2], stability=stability, reasoning_trace=f"Positive graph signal={signal:.2f}; instability={instability:.2f}."),
             SynthesizedOutcome(outcome=f"Base case for: {scenario.target_question}", probability=probabilities["base"], confidence=confidence, key_drivers=driver_ids, key_assumptions=assumptions, stability=stability, reasoning_trace="Most evidence remains balanced; no single driver overwhelms the graph."),
@@ -559,6 +659,7 @@ class ScenarioSynthesizer(AgentBase[ScenarioSynthesisInput, ScenarioSynthesisOut
             scope=scenario.description or scenario.name,
             timeframe=payload.timeframe or scenario.time_horizon,
             resolution_criteria=f"Resolve after {payload.timeframe or scenario.time_horizon or 'the stated horizon'} using the observable outcome of: {scenario.target_question}",
+            case_bounds=case_bounds,
             outcomes=outcomes,
             probabilities=probabilities,
             confidence=confidence,
@@ -610,8 +711,7 @@ class PredictionCoordinator(AgentBase[PredictionInput, PredictionOutput]):
         child_run_ids.append(b_run)
         s_run, synthesis = ScenarioSynthesizer(self.db, config=self.config, llm_client=self.llm_client).run(ScenarioSynthesisInput(scenario_id=payload.scenario_id, question=payload.question, timeframe=payload.timeframe, node_forecasts=forecasts, traversal=traversal, instability=instability, base_rates=base_rates), parent_run_id=run_id)
         child_run_ids.append(s_run)
-        if not set(synthesis.key_drivers) <= {n.id for n in view["nodes"]} or not set(synthesis.evidence_links) <= {e.id for e in view["evidence"]}:
-            raise ValueError("Prediction synthesis cites entities or evidence outside the configured dependency scope")
+        _validate_synthesis_scope(synthesis, view)
         snapshot = freeze_graph(self.db, payload.scenario_id, view, agent=self.agent_id, reason="Prediction dependency context")
 
         repo = ScenarioRepository(self.db)
@@ -633,7 +733,8 @@ class PredictionCoordinator(AgentBase[PredictionInput, PredictionOutput]):
             "assumptions": synthesis.assumptions,
             "status": status,
             "calibration_result": {"graph_snapshot_id": snapshot.id, "graph_scope": view["scope"].model_dump(),
-                                   "knowledge_revision": knowledge_revision(view), "as_of": now},
+                                   "knowledge_revision": knowledge_revision(view), "as_of": now,
+                                   "case_bounds": synthesis.case_bounds.model_dump(mode="json") if synthesis.case_bounds else None},
         }
         if existing is None:
             prediction = repo.create_prediction(actor=self.agent_id, reason="Phase H prediction synthesis", probability_history=probability_history, **values)

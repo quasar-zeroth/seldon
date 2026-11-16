@@ -12,6 +12,8 @@ Direct specialist routes execute coordinators in the request transaction; `/jobs
 
 Provider-free workspace routes share host sessions/authentication and must not invoke the built-in model pipeline. Keep read/export access useful without provider keys and model health separate from API/database availability. Preserve local-versus-production authentication configuration. Coordinate client contracts with [apps/web](../../../apps/web/AGENTS.md).
 
+Scenario report downloads render saved conditional hot-take bounds before probabilities for both built-in and external forecasts. Escape stored text in HTML reports; historical records without bounds remain readable.
+
 Verification: `test_phase_d_api.py`, phase K operations and follow-up orchestration/exports tests under [tests/unit](../../../tests/unit/), plus workspace API tests. Inject clients and databases for offline checks.
 
 Implementation is the source of truth: code, schemas, migrations, CLI help and tests outrank design notes. Update relevant AGENTS.md files for incorrect, missing or new guidance. Keep maps concise; split detailed material into focused linked docs or child maps rather than maintaining a second endpoint catalogue.

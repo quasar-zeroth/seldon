@@ -152,6 +152,92 @@ def researched(factory):
     return export(factory, state["scenario"]["id"])
 
 
+def test_hot_take_bounds_are_scoped_frozen_and_visible_in_reports(factory):
+    from seldon.workspace.reports import ReportRequest, generate_report, report_file
+
+    state = researched(factory)
+    payload = forecast_payload(state)
+    bounds = {
+        side: {
+            "outcome": outcome,
+            "rationale": "Conditional compounding of demand and rates, not a guaranteed limit",
+            "assumptions": ["Joint driver moves remain feasible"],
+            "evidence_ids": ["source"],
+            "value": value,
+        }
+        for side, outcome, value in (("lower", "Demand reversal", 2000), ("upper", "Demand acceleration", 6000))
+    }
+    payload["forecast"]["case_bounds"] = bounds
+    result = apply(factory, payload)
+    assert apply(factory, payload)["replayed"]
+    state = export(factory, state["scenario"]["id"])
+    saved = state["predictions"][-1]["calibration_result"]["forecast"]["case_bounds"]
+    assert saved["lower"]["value"] == 2000
+    assert saved["upper"]["evidence_ids"] == [state["evidence"][0]["id"]]
+    assert sum(state["predictions"][-1]["probabilities"].values()) == 1
+    assert len(state["predictions"][-1]["scenarios"]) == 2
+    from seldon.workspace.pipeline import workspace_steps
+
+    synthesis = next(step for step in workspace_steps(payload, result) if step["stage"] == "synthesis")
+    assert synthesis["result"]["case_bounds"] == saved
+    assert "Hot takes: conditional stress bounds" in render_markdown(state)
+    with factory() as db, db.begin():
+        version = db.scalar(select(ScenarioVersion).where(ScenarioVersion.scenario_prediction_id == result["prediction_id"]))
+        assert version.snapshot["calibration_result"]["forecast"]["case_bounds"] == saved
+        report = generate_report(db, state["scenario"]["id"], ReportRequest(request_id="hot-takes-report"))
+        original_report = report_file(db, report["id"], "summary.md")["content"]
+        assert "Demand acceleration" in original_report
+    newer = forecast_payload(state)
+    newer["request_id"] = "newer-forecast"
+    newer["forecast"]["case_bounds"] = copy.deepcopy(bounds)
+    newer["forecast"]["case_bounds"]["upper"]["value"] = 6500
+    apply(factory, newer)
+    with factory() as db:
+        assert report_file(db, report["id"], "summary.md")["content"] == original_report
+        assert db.scalar(select(ScenarioVersion).where(ScenarioVersion.scenario_prediction_id == result["prediction_id"])).snapshot["calibration_result"]["forecast"]["case_bounds"] == saved
+
+
+def test_hot_take_bounds_reject_invalid_values_and_out_of_scope_citations(factory):
+    from seldon.data.repositories import KBRepository
+
+    state = researched(factory)
+    with factory() as db, db.begin():
+        orphan = KBRepository(db).create_entry(content="Not attached to the dependency scope", scenario_ids=[state["scenario"]["id"]])
+        orphan_id = orphan.id
+    state = export(factory, state["scenario"]["id"])
+    payload = forecast_payload(state)
+    bound = {"outcome": "Stress", "rationale": "Conditional drivers", "assumptions": ["A premise"], "evidence_ids": ["missing"], "value": None}
+    payload["forecast"]["case_bounds"] = {"lower": dict(bound), "upper": dict(bound)}
+    with pytest.raises(ValueError):
+        apply(factory, payload)
+    for side in ("lower", "upper"):
+        payload["forecast"]["case_bounds"][side]["evidence_ids"] = [orphan_id]
+    with pytest.raises(ValueError, match="outside the configured dependency scope"):
+        apply(factory, payload)
+    assert export(factory, state["scenario"]["id"])["revision"] == state["revision"]
+    for lower, upper in ((5000, 2000), (2000, None), (2000, float("inf")), (2000, 2000)):
+        payload["forecast"]["case_bounds"]["lower"]["value"] = lower
+        payload["forecast"]["case_bounds"]["upper"]["value"] = upper
+        with pytest.raises(ValidationError):
+            WorkspaceApply.model_validate(payload)
+
+
+def test_legacy_forecast_replay_fingerprint_is_preserved(factory):
+    from seldon.workspace.service import _digest
+
+    state = researched(factory)
+    payload = forecast_payload(state)
+    apply(factory, payload)
+    with factory() as db, db.begin():
+        run = next(r for r in db.scalars(select(AgentRun)) if r.input.get("request_id") == payload["request_id"])
+        legacy = WorkspaceApply.model_validate(payload).model_dump(mode="json")
+        for key in ("graph_scope", "reuse_node_ids", "reuse_edge_ids", "reuse_evidence_ids", "allow_shared_updates", "prediction_request_id"):
+            legacy.pop(key)
+        legacy["forecast"].pop("case_bounds")
+        assert run.input["request_hash"] == _digest(legacy)
+    assert apply(factory, payload)["replayed"]
+
+
 def test_shared_knowledge_depth_and_frozen_forecast_history(factory):
     from seldon.data.models import ERGNode
     from seldon.workspace.knowledge import search_library

@@ -807,6 +807,10 @@ def create_app(
         if scenario.description:
             lines.extend(["", "## Description", scenario.description])
         if latest is not None:
+            from seldon.workspace.cases import case_bounds_markdown
+
+            details = latest.calibration_result or {}
+            bounds = (details.get("forecast") or {}).get("case_bounds") or details.get("case_bounds")
             lines.extend([
                 "",
                 "## Latest prediction",
@@ -815,6 +819,7 @@ def create_app(
                 f"Confidence: {round(latest.confidence * 100)}%",
                 f"Status: {latest.status}",
                 "",
+                *case_bounds_markdown(bounds),
                 "## Probabilities",
             ])
             lines.extend([f"- {key}: {round(float(value) * 100)}%" for key, value in latest.probabilities.items() if isinstance(value, int | float)])
@@ -831,11 +836,13 @@ def create_app(
         if format == "json":
             return JSONResponse(payload)
         if format == "html":
+            from html import escape
+
             html = "".join(
-                f"<p>{line}</p>" if line and not line.startswith("#") else (f"<h1>{line[2:]}</h1>" if line.startswith("# ") else f"<h2>{line[3:]}</h2>" if line.startswith("## ") else "")
+                f"<p>{escape(line)}</p>" if line and not line.startswith("#") else (f"<h1>{escape(line[2:])}</h1>" if line.startswith("# ") else f"<h2>{escape(line[3:])}</h2>" if line.startswith("## ") else f"<h3>{escape(line[4:])}</h3>" if line.startswith("### ") else "")
                 for line in markdown.splitlines()
             )
-            return HTMLResponse(f"<!doctype html><html><head><title>{scenario.name}</title></head><body>{html}</body></html>")
+            return HTMLResponse(f"<!doctype html><html><head><title>{escape(scenario.name)}</title></head><body>{html}</body></html>")
         return PlainTextResponse(markdown, media_type="text/markdown")
 
     @app.patch("/scenarios/{scenario_id}")

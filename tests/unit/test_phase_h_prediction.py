@@ -103,6 +103,44 @@ def test_scenario_synthesis_probability_validation_rejects_bad_totals():
         raise AssertionError("Expected probability validation failure")
 
 
+def test_historical_synthesis_without_hot_takes_remains_readable():
+    synthesis = ScenarioSynthesisOutput.model_validate({
+        "statement": "Historical forecast",
+        "resolution_criteria": "Historical resolution rules",
+        "outcomes": [{"outcome": "Base", "probability": 1.0, "confidence": 0.5}],
+        "probabilities": {"base": 1.0},
+        "confidence": 0.5,
+    })
+    assert synthesis.case_bounds is None
+
+
+def test_development_fallback_without_evidence_does_not_invent_bound_citations(tmp_path):
+    from seldon.agents.prediction import (
+        GraphTraversalOutput,
+        InstabilityOutput,
+        ScenarioSynthesisInput,
+        ScenarioSynthesizer,
+    )
+
+    factory = session_factory()
+    with factory() as db, db.begin():
+        scenario = ScenarioRepository(db).create_scenario(
+            name="No evidence", target_question="Will the metric rise?", time_horizon="6 months"
+        )
+        _, synthesis = ScenarioSynthesizer(db, config=SeldonConfig(data_dir=tmp_path)).run(
+            ScenarioSynthesisInput(
+                scenario_id=scenario.id,
+                question=scenario.target_question,
+                node_forecasts=[],
+                traversal=GraphTraversalOutput(traversal_log=[], aggregate_signal=0.0),
+                instability=InstabilityOutput(hotspots=[], overall_instability=1.0),
+            )
+        )
+        assert synthesis.case_bounds is None
+        assert synthesis.evidence_links == []
+        assert any("no scoped evidence" in assumption for assumption in synthesis.assumptions)
+
+
 def test_python_predictor_enforces_workspace_dependency_depth(tmp_path):
     import pytest
     from seldon.agents.prediction import NodeStatePredictor, NodeForecastInput
@@ -151,7 +189,19 @@ def test_prediction_coordinator_creates_versioned_prediction_with_provenance(tmp
         assert output.traversal.traversal_log
         assert output.instability.hotspots
         assert output.markdown_path and (tmp_path / "exports" / "scenarios" / f"{prediction.id}.md").exists()
-        assert db.scalar(select(ScenarioVersion).where(ScenarioVersion.scenario_prediction_id == prediction.id)) is not None
+        version = db.scalar(select(ScenarioVersion).where(ScenarioVersion.scenario_prediction_id == prediction.id))
+        assert version is not None
+        bounds = output.synthesis.case_bounds.model_dump(mode="json")
+        assert prediction.calibration_result["case_bounds"] == bounds
+        assert version.snapshot["calibration_result"]["case_bounds"] == bounds
+        assert bounds["lower"]["evidence_ids"] == [kb.id]
+        assert bounds["lower"]["value"] is None
+        assert bounds["upper"]["value"] is None
+        assert "Unresearched illustrative" in bounds["lower"]["rationale"]
+        assert any(bounds["upper"]["outcome"] in item for item in prediction.assumptions)
+        exported = (tmp_path / "exports" / "scenarios" / f"{prediction.id}.md").read_text()
+        assert bounds["lower"]["outcome"] in exported
+        assert "conditional stress bounds" in exported
 
 
 def test_prediction_coordinator_refreshes_existing_prediction_and_appends_history(tmp_path):
@@ -162,6 +212,8 @@ def test_prediction_coordinator_refreshes_existing_prediction_and_appends_histor
             _, first = PredictionCoordinator(db, config=SeldonConfig(data_dir=tmp_path)).run(
                 PredictionCoordinator.input_from_scenario(scenario, max_driver_nodes=2, export_markdown=False)
             )
+            first_bounds = first.synthesis.case_bounds.model_dump(mode="json")
+            scenario.target_question = "Will gold outperform cash over the next 6 months?"
             _, second = PredictionCoordinator(db, config=SeldonConfig(data_dir=tmp_path)).run(
                 PredictionCoordinator.input_from_scenario(scenario, max_driver_nodes=2, export_markdown=False)
             )
@@ -173,6 +225,9 @@ def test_prediction_coordinator_refreshes_existing_prediction_and_appends_histor
         versions = list(db.scalars(select(ScenarioVersion).where(ScenarioVersion.scenario_prediction_id == prediction.id).order_by(ScenarioVersion.version)))
         assert [version.version for version in versions] == [1, 2]
         assert second.version == 2
+        assert versions[0].snapshot["calibration_result"]["case_bounds"] == first_bounds
+        assert versions[1].snapshot["calibration_result"]["case_bounds"] == second.synthesis.case_bounds.model_dump(mode="json")
+        assert first_bounds != prediction.calibration_result["case_bounds"]
 
 
 def test_prediction_api_runs_real_phase_h_workflow_and_exposes_predictions(tmp_path):

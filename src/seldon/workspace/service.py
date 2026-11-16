@@ -187,6 +187,8 @@ class WorkspaceService:
             access = f"From {repository}, use uv run seldon research --db {database}"
         else:
             access = "Use this server's authenticated /workspace HTTP interface"
+        from .cases import CASE_GENERATION_GUIDANCE
+
         data["research_handoff"] = (
             f"Read {repository / 'AGENTS.md'} and {repository / 'docs/agent-workflow.md'}. "
             f"Continue existing research scenario {scenario_id}; do not create another scenario. "
@@ -198,7 +200,8 @@ class WorkspaceService:
             "assumptions, and unknowns. Inspect perspectives export for conflicting claims, source affiliations, and dated trust/leaning assessments. Use perspectives catalog and perspectives connections to navigate entity/topic/claim/source paths, preserving explicit identities and relationship direction. Use perspectives apply to add sourced judgments; never treat repeated coverage as independent confirmation or an observation as a verified fact. Reconcile disputed or superseded claims explicitly in forecasts. Investigate counterevidence and record coverage and remaining gaps. "
             "For a current-state investigation, save a research summary without inventing a forecast. "
             "If a prediction is requested, define a future resolution date and measurable criteria, "
-            "assess all scoped nodes, and save reviewed forecast branches. Export Markdown and JSON. "
+            "assess all scoped nodes, and save reviewed forecast branches. "
+            + CASE_GENERATION_GUIDANCE + " Export Markdown and JSON. "
             "Use your existing agent session; do not invoke provider-backed run endpoints or place trades."
         )
         return data
@@ -241,6 +244,8 @@ class WorkspaceService:
         for item in request["nodes"]:
             if item.get("tags") is None:
                 item.pop("tags", None)
+        if request.get("forecast") and request["forecast"].get("case_bounds") is None:
+            request["forecast"].pop("case_bounds", None)
         fingerprint = _digest(request)
         for run in before["runs"]:
             if run["input"].get("request_id") == p.request_id:
@@ -562,6 +567,12 @@ class WorkspaceService:
             if set(assessments) != node_ids or len(assessments) != len(node_ids):
                 raise ValueError("Provide exactly one forecast assessment per node")
             evidence_ids = set()
+            if f.case_bounds:
+                for bound in (f.case_bounds.lower, f.case_bounds.upper):
+                    bound_refs = evidence_refs(bound.evidence_ids)
+                    if not set(bound_refs) <= {entry.id for entry in view["evidence"]}:
+                        raise ValueError("Hot-take bounds cite evidence outside the configured dependency scope")
+                    evidence_ids.update(bound_refs)
             for a in f.node_assessments:
                 refs = evidence_refs(a.evidence_ids)
                 node = scoped(ERGNode, ref("node", a.node_id))
@@ -591,6 +602,9 @@ class WorkspaceService:
                     "Forecast requires observed source evidence, not assumptions alone"
                 )
             forecast = f.model_dump(mode="json")
+            if f.case_bounds:
+                for bound in forecast["case_bounds"].values():
+                    bound["evidence_ids"] = evidence_refs(bound["evidence_ids"])
             forecast["target_node_id"] = target
             for assessment in forecast["node_assessments"]:
                 assessment["node_id"] = ref("node", assessment["node_id"])
@@ -730,6 +744,9 @@ def render_markdown(data: dict) -> str:
     if data["predictions"]:
         prediction = data["predictions"][-1]
         details = (prediction.get("calibration_result") or {}).get("forecast", {})
+        from .cases import case_bounds_markdown
+
+        bounds = details.get("case_bounds") or (prediction.get("calibration_result") or {}).get("case_bounds")
         lines.extend(
             [
                 "## Latest forecast",
@@ -741,6 +758,7 @@ def render_markdown(data: dict) -> str:
                 f"Units: {prediction['scope']}; resolution: {prediction['timeframe']}",
                 f"As of: {details.get('as_of', 'See prediction history')}",
                 "",
+                *case_bounds_markdown(bounds),
                 "| Branch | Probability | Outcome |",
                 "| --- | ---: | --- |",
             ]

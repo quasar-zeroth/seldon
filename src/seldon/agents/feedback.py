@@ -234,6 +234,7 @@ class FeedbackCoordinator(AgentBase[FeedbackInput, FeedbackOutput]):
 
         probabilities = _prediction_probabilities(prediction)
         calibration_result = {
+            **(prediction.calibration_result or {}),
             "brier_score": _brier(probabilities, payload.resolved_outcome_key),
             "log_score": _log_score(outcome.probability_assigned),
             "probability_assigned": outcome.probability_assigned,

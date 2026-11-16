@@ -17,9 +17,13 @@ Coordinators turn research into persisted evidence and graph structure, then syn
 
 Forecast context comes from [workspace/knowledge.py](../workspace/knowledge.py), matching the GUI's target and dependency scope. Preserve evidence/graph snapshots, reject out-of-scope citations, and retain disagreements and dated source assessments from [perspectives](../workspace/perspectives/AGENTS.md). Subjective trust scores are neither calibrated probabilities nor independent votes. General ERG relationships can contain cycles; the external workspace imposes its own influence DAG.
 
+Prediction synthesis constructs evidence-constrained lower/upper hot takes before the evidence-informed central cases, using the shared contract in [workspace/cases.py](../workspace/cases.py). New model outputs require bounds and scoped citations; historical outputs can omit them. Bounds describe conditional stress scenarios, not guaranteed limits or additional probability mass, and remain in calibration data, frozen versions and visible assumptions. Development fallback bounds are explicitly unresearched illustrations without numeric values; absent evidence means absent bounds, never invented citations.
+
 Normal semantic execution needs a provider. Do not substitute deterministic development fallbacks for the external-agent workflow in [agent-workflow.md](../../../docs/agent-workflow.md). Inspect each specialist's actual fallback policy: it is not uniform. Several `advanced.py` outputs are heuristics/templates; its base-rate helper copies current forecast probabilities, while `prediction.py` derives priors from earlier forecasts or a neutral prior. Neither establishes empirical historical frequencies. `OutcomeMonitor` records supplied resolutions; it does not fetch outcomes autonomously.
 
 `AdversarialRedTeamAgent` and `RootCauseAnalyzer` currently catch all model exceptions and use deterministic results without checking the development-fallback flag. Their authentication failures therefore do not propagate to the queue's pause handler. Treat uniform failure policy as remaining work, not an implemented guarantee.
+
+Outcome resolution merges calibration scores into saved forecast context so stress bounds, graph provenance and prior review remain available after resolution.
 
 Verification: phase E–J tests and `test_followup_c11_*` specialist/retrieval/graph/agent tests in [tests/unit](../../../tests/unit/); use mocked providers for offline work.
 

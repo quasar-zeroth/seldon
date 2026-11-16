@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+from copy import deepcopy
+from datetime import datetime, timezone
+
+import pytest
+
 from seldon.agents.advanced import AdversarialRedTeamAgent, AdvancedIntelligenceInput
 from seldon.agents.context_gathering import InformationSummarizer
 from seldon.agents.contracts import RetrievalResult, RetrievedSource
@@ -118,40 +123,129 @@ def test_relationship_detector_uses_llm_contract_and_preserves_pair_ids(mock_llm
     assert output.relationship_type == "causes"
 
 
-def test_scenario_synthesizer_uses_llm_contract_for_arbitrary_scenarios(mock_llm):
+def synthesis_response(scenario, kb, rates, price):
+    return {
+        "statement": scenario.target_question,
+        "scope": "Gold market",
+        "timeframe": "6 months",
+        "resolution_criteria": "Resolve using spot gold after six months.",
+        "case_bounds": {
+            "lower": {
+                "outcome": "Demand support fails as cuts are cancelled",
+                "rationale": "Rate support reverses and compounds weaker demand; a stress assumption, not observed evidence.",
+                "assumptions": ["Cuts are cancelled", "No offsetting safe-haven demand"],
+                "evidence_ids": [kb.id],
+            },
+            "upper": {
+                "outcome": "Rapid easing and stronger demand reinforce a rally",
+                "rationale": "The cited transmission channel compounds if easing is unusually rapid; safe-haven effects remain uncertain.",
+                "assumptions": ["Easing exceeds expectations", "Supply does not offset demand"],
+                "evidence_ids": [kb.id],
+            },
+        },
+        "outcomes": [
+            {"outcome": "Rate-cut rally", "probability": 0.5, "confidence": 0.68, "key_drivers": [rates.id], "key_assumptions": ["Rate cuts proceed"], "stability": "moderately_stable", "reasoning_trace": "Easing supports demand, but falls short of upper-bound acceleration."},
+            {"outcome": "Range-bound chop", "probability": 0.3, "confidence": 0.6, "key_drivers": [price.id], "key_assumptions": ["Drivers offset"], "stability": "stable", "reasoning_trace": "Neither extreme's reinforcing drivers materialize."},
+            {"outcome": "Inflation shock selloff", "probability": 0.2, "confidence": 0.55, "key_drivers": [rates.id], "key_assumptions": ["Inflation reaccelerates"], "stability": "unstable", "reasoning_trace": "Cuts are delayed but not cancelled, unlike the lower stress bound."},
+        ],
+        "probabilities": {"rate-cut rally": 0.5, "range-bound chop": 0.3, "inflation shock selloff": 0.2},
+        "confidence": 0.64,
+        "key_drivers": [rates.id, price.id],
+        "evidence_links": [],
+        "assumptions": ["Rate cuts proceed", "No inflation shock dominates"],
+    }
+
+
+def synthesis_input(scenario, rates, price):
+    return ScenarioSynthesisInput(
+        scenario_id=scenario.id,
+        question=scenario.target_question,
+        timeframe="6 months",
+        node_forecasts=[NodeStateForecast(node_id=rates.id, node_name="Rate cuts", forecast="Cuts likely", confidence=0.7)],
+        traversal=GraphTraversalOutput(traversal_log=[], aggregate_signal=0.3, visited_node_ids=[rates.id, price.id]),
+        instability=InstabilityOutput(hotspots=[], overall_instability=0.2),
+    )
+
+
+def test_scenario_synthesizer_uses_llm_contract_for_arbitrary_scenarios(mock_llm, monkeypatch):
+    calls = []
+    complete_json = mock_llm.complete_json
+
+    def capture(messages, **kwargs):
+        calls.append((messages, kwargs))
+        return complete_json(messages, **kwargs)
+
+    monkeypatch.setattr(mock_llm, "complete_json", capture)
     factory = session_factory()
     with factory() as db, db.begin():
-        scenario, _kb, rates, price, edge, _prediction = seed_prediction_context(db)
-        mock_llm["Scenario Synthesizer"] = {
-            "statement": scenario.target_question,
-            "scope": "Gold market",
-            "timeframe": "6 months",
-            "resolution_criteria": "Resolve using spot gold after six months.",
-            "outcomes": [
-                {"outcome": "Rate-cut rally", "probability": 0.5, "confidence": 0.68, "key_drivers": [rates.id], "key_assumptions": ["Rate cuts proceed"], "stability": "moderately_stable", "reasoning_trace": "Easing supports demand."},
-                {"outcome": "Range-bound chop", "probability": 0.3, "confidence": 0.6, "key_drivers": [price.id], "key_assumptions": ["Drivers offset"], "stability": "stable", "reasoning_trace": "Signals offset."},
-                {"outcome": "Inflation shock selloff", "probability": 0.2, "confidence": 0.55, "key_drivers": [rates.id], "key_assumptions": ["Inflation reaccelerates"], "stability": "unstable", "reasoning_trace": "Cuts are delayed."},
-            ],
-            "probabilities": {"rate-cut rally": 0.5, "range-bound chop": 0.3, "inflation shock selloff": 0.2},
-            "confidence": 0.64,
-            "key_drivers": [rates.id, price.id],
-            "evidence_links": [],
-            "assumptions": ["Rate cuts proceed", "No inflation shock dominates"],
-        }
+        scenario, kb, rates, price, *_ = seed_prediction_context(db)
+        kb.valid_from = datetime(2026, 11, 1, tzinfo=timezone.utc)
+        response = synthesis_response(scenario, kb, rates, price)
+        mock_llm["Scenario Synthesizer"] = response
         _, output = ScenarioSynthesizer(db, config=SeldonConfig(), llm_client=mock_llm).run(
-            ScenarioSynthesisInput(
-                scenario_id=scenario.id,
-                question=scenario.target_question,
-                timeframe="6 months",
-                node_forecasts=[NodeStateForecast(node_id=rates.id, node_name="Rate cuts", forecast="Cuts likely", confidence=0.7)],
-                traversal=GraphTraversalOutput(traversal_log=[], aggregate_signal=0.3, visited_node_ids=[rates.id, price.id]),
-                instability=InstabilityOutput(hotspots=[], overall_instability=0.2),
-            )
+            synthesis_input(scenario, rates, price)
         )
+        messages, kwargs = calls[0]
+        assert kb.content in messages[0]["content"]
+        assert kb.id in messages[0]["content"]
+        assert "2026-11-01" in messages[0]["content"]
+        assert kb.source_name in messages[0]["content"]
+        assert "case_bounds" in kwargs["schema"].model_json_schema()["required"]
+        assert kwargs["system"].index("First construct case_bounds") < kwargs["system"].index("Then synthesize")
+        assert output.case_bounds.lower.evidence_ids == [kb.id]
+        assert output.evidence_links == [kb.id]
+        assert any(output.case_bounds.lower.outcome in assumption for assumption in output.assumptions)
 
-    assert set(output.probabilities) == {"rate-cut rally", "range-bound chop", "inflation shock selloff"}
+    assert output.probabilities == response["probabilities"]
     assert abs(sum(output.probabilities.values()) - 1.0) < 0.01
     assert output.outcomes[0].outcome == "Rate-cut rally"
+
+
+@pytest.mark.parametrize("invalid", ["missing_bounds", "foreign_citation"])
+def test_scenario_synthesizer_repairs_missing_bounds_and_invalid_bound_citations(invalid):
+    factory = session_factory()
+    with factory() as db, db.begin():
+        scenario, kb, rates, price, *_ = seed_prediction_context(db)
+        valid = synthesis_response(scenario, kb, rates, price)
+        broken = deepcopy(valid)
+        if invalid == "missing_bounds":
+            broken.pop("case_bounds")
+        else:
+            foreign = KBRepository(db).create_entry(content="Unrelated out-of-scope evidence")
+            broken["case_bounds"]["lower"]["evidence_ids"] = [foreign.id]
+
+        class RepairingLLM:
+            calls = []
+
+            def complete_json(self, messages, **kwargs):
+                self.calls.append(messages)
+                return broken if len(self.calls) == 1 else valid
+
+        client = RepairingLLM()
+        config = SeldonConfig()
+        config.agents.allow_deterministic_dev_fallback = False
+        _, output = ScenarioSynthesizer(db, config=config, llm_client=client).run(
+            synthesis_input(scenario, rates, price)
+        )
+        assert len(client.calls) == 2
+        assert "failed structured validation" in client.calls[1][-1]["content"]
+        assert output.case_bounds.lower.evidence_ids == [kb.id]
+
+
+def test_scenario_synthesizer_rejects_persistently_missing_bounds(mock_llm):
+    factory = session_factory()
+    with factory() as db, db.begin():
+        scenario, kb, rates, price, *_ = seed_prediction_context(db)
+        broken = synthesis_response(scenario, kb, rates, price)
+        broken.pop("case_bounds")
+        mock_llm["Scenario Synthesizer"] = broken
+        config = SeldonConfig()
+        config.agents.allow_deterministic_dev_fallback = False
+        with pytest.raises(ValueError, match="case_bounds"):
+            ScenarioSynthesizer(db, config=config, llm_client=mock_llm).run(
+                synthesis_input(scenario, rates, price)
+            )
+        assert mock_llm["_call_count"]["n"] == 2
 
 
 def test_red_team_and_root_cause_analyzers_use_llm_contracts(mock_llm):

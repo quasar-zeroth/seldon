@@ -186,6 +186,10 @@ def generate_report(db: Session, scenario_id: str, request: ReportRequest) -> di
                 f"Resolution: {p['timeframe']}. Full resolution rules and reasoning are in the detailed report.",
                 "",
             ]
+            from .cases import case_bounds_markdown
+
+            details = p.get("calibration_result") or {}
+            lines += case_bounds_markdown((details.get("forecast") or {}).get("case_bounds") or details.get("case_bounds"))
             for branch in p["scenarios"]:
                 prob = branch.get("probability")
                 probability = (

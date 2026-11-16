@@ -7,6 +7,7 @@ Agents with shell or HTTP tools supply research and semantic reasoning using the
 | File/directory | Logic |
 | --- | --- |
 | `schemas.py` | Start/apply contracts, evidence/research/node/edge/forecast structures, graph scope and validation bounds. |
+| `cases.py` | Shared bounds-first hot-take instructions, conditional stress-bound contracts and Markdown rendering. |
 | `service.py` | Question creation, revision/replay checks, transactional mutations, DAG/forecast gates, JSON and Markdown exports. |
 | `cli.py`, `api.py`, `__init__.py` | `seldon research` commands, HTTP routes sharing host sessions/authentication, package boundary. |
 | `knowledge.py` | Tagged/paginated library search, bounded upstream dependency scope, knowledge revision and frozen graph/evidence snapshots. |
@@ -18,6 +19,8 @@ Agents with shell or HTTP tools supply research and semantic reasoning using the
 Start questions with `StartRequest` through CLI, HTTP or the GUI proxy. Exports include a derived handoff identifying the scenario and actual database; host-specific instructions stay outside the knowledge revision. Markdown leads with recorded findings, gaps and node assessments before the complete audit payload. Current-state investigations may stop with sourced findings and gaps without fabricating a forecast.
 
 Influence edges run upstream driver to downstream effect. Reject cycles, dangling references, stale revisions, invalid probabilities and out-of-scope citations. Bounded research saturation is not omniscience; budget stops retain gaps. Preserve fact/assumption distinctions, source dates, unknowns, node forecasts, synthesis and adversarial checks. Replays must not duplicate evidence/predictions, and detachments preserve shared records/history while removing incident scenario edges explicitly.
+
+New research forecasts construct evidence-backed lower/upper hot takes before central cases. Conditional stress bounds have assumptions and scoped citations, not additional probability mass or guaranteed coverage; tail branches still cover outcomes beyond them. Legacy submissions may omit bounds, and replay hashes/history remain compatible. Reports display saved bounds before central branches.
 
 Search the library and reuse UUIDs/provenance before creating records; tag creates/updates and distinguish physical campuses from programmes. Shared factual edits use `allow_shared_updates` after affected uses are reviewed. This is an auditable intent flag, not an extra user-approval requirement. Preserve memberships and frozen forecast snapshots. GUI and prediction agents use the same scoped view; take scope bounds from `GraphScope`.
 

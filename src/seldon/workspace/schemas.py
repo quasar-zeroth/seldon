@@ -8,6 +8,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from .cases import CaseBounds
+
 
 class Contract(BaseModel):
     model_config = ConfigDict(
@@ -124,6 +126,10 @@ class ForecastWrite(Contract):
     units: str = Field(min_length=1)
     statement: str = Field(min_length=1)
     resolution_criteria: str = Field(min_length=1)
+    case_bounds: CaseBounds | None = Field(
+        default=None,
+        description="Generate lower/upper hot takes before central cases; optional only for legacy clients and replay compatibility",
+    )
     branches: list[Branch] = Field(min_length=2)
     confidence: float = Field(ge=0, le=1)
     node_assessments: list[NodeAssessment] = Field(min_length=1)
