@@ -15,6 +15,9 @@ def execute(args: argparse.Namespace) -> int:
     if args.research_command == "cycles" and args.cycles_command in ("schema", "catalog"):
         from .cycles.cli import static
         result = static(args)
+    elif args.research_command == "transcripts" and args.transcripts_command in ("schema", "catalog"):
+        from .transcripts.cli import static
+        result = static(args)
     elif args.research_command == "perspectives" and args.perspective_command == "schema":
         from .perspectives.schemas import PerspectiveApply
         result = PerspectiveApply.model_json_schema()
@@ -30,6 +33,9 @@ def execute(args: argparse.Namespace) -> int:
                 service = WorkspaceService(db)
                 if args.research_command == "cycles":
                     from .cycles.cli import run
+                    result = run(args, db)
+                elif args.research_command == "transcripts":
+                    from .transcripts.cli import run
                     result = run(args, db)
                 elif args.research_command == "perspectives":
                     from .perspectives import export_graph, apply_graph, index_scenario, select_context
@@ -130,7 +136,7 @@ def execute(args: argparse.Namespace) -> int:
 
 def add_parser(subparsers) -> None:
     parser = subparsers.add_parser(
-        "research", help="Agent-led DAG research; no provider credentials or API calls"
+        "research", help="Agent-led DAG research; no model provider credentials or calls (transcripts fetch is the one network command)"
     )
     parser.add_argument(
         "--db",
@@ -221,9 +227,12 @@ def add_parser(subparsers) -> None:
     perspective_index = perspective_commands.add_parser("index", help="Index a saved research question without assuming its claims are verified")
     perspective_index.add_argument("scenario_id")
     from .cycles.cli import add_parser as add_cycles
+    from .transcripts.cli import add_parser as add_transcripts
     cycle_commands = add_cycles(commands)
+    transcript_commands = add_transcripts(commands)
     for command in (
         *cycle_commands,
+        *transcript_commands,
         perspective_connections, perspective_catalog, perspective_schema, perspective_export, perspective_apply, perspective_index,
         start,
         export,

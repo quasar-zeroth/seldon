@@ -73,6 +73,15 @@ Use the [root AGENTS.md lookup table](AGENTS.md) to locate owning modules and [p
 | Cycle topic / relevance score | A reusable subject matched to questions by entity UUIDs or tags, and a 0-1 judged strength (with direction, channel and horizon) of a cycle's bearing on it. Cycles at or above the floor enter matched questions' context. `target_score` counts only topics containing the forecast target. |
 | Cycle prior | Outlook of a cycle a question inherits through entity links or topic relevance, frozen with forecasts and recorded by agents as assumption evidence, never as an observation. |
 
+## Video transcripts
+
+| Term | Meaning in this project |
+| --- | --- |
+| Transcript / version | Timed text a service returned for a video at a retrieval time, stored append-only. A changed caption track or metadata adds a version. See [docs/transcripts.md](docs/transcripts.md). |
+| Caption kind | How the text was produced: `manual` (creator captions), `auto-generated` (platform speech recognition), `ai-generated` (transcription service), or `unknown`. |
+| Excerpt | A cited time window, optionally with a verbatim quote checked against the transcript. Ingested as evidence of what was said, not of whether it is true. |
+| Mention | A lexical match of a shared entity name in a transcript. It suggests, but does not establish, that the same entity is meant. |
+
 ## Topics, claims and provenance
 
 | Term | Meaning in this project |

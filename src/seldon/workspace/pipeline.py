@@ -23,6 +23,7 @@ from seldon.data.models import (
 from seldon.data.repositories import row_to_dict
 
 STAGES = (
+    ("transcription", "Video transcripts"),
     ("context_gathering", "Research & evidence"),
     ("extraction", "Entity extraction"),
     ("graph_construction", "Dependency graph"),
@@ -33,6 +34,9 @@ STAGES = (
     ("review", "Base rates & adversarial review"),
     ("prediction", "Saved prediction"),
 )
+# Shown only once a question has recorded work for them, so other questions keep their stage counts.
+OPTIONAL_STAGES = {"transcription"}
+TRANSCRIPT_PHASE = "media_transcript"
 
 AGENT_STAGES = {
     "node_state_predictor": "node_prediction",
@@ -56,6 +60,15 @@ def workspace_steps(request: dict, output: dict) -> list[dict]:
             {"stage": stage, "status": status, "summary": summary, "result": result}
         )
 
+    for media in request.get("media") or []:
+        excerpts = media.get("excerpts", [])
+        add(
+            "transcription",
+            f"{len(excerpts)} timestamped excerpts from '{media.get('title') or media.get('url')}' "
+            f"({media.get('service')}, {media.get('caption_kind')}, {media.get('language')}); "
+            f"{media.get('covered_seconds')} of {media.get('duration_seconds')} seconds cited",
+            media,
+        )
     research = output.get("research_round") or request.get("research_round") or {}
     if (
         request.get("evidence")
@@ -193,8 +206,10 @@ def pipeline_snapshot(
     for run in runs:
         if not scenario_id or run_scenario(run) != scenario_id:
             continue
-        external = run.phase == "external_workspace"
-        if external:
+        external = run.phase in {"external_workspace", TRANSCRIPT_PHASE}
+        if run.phase == TRANSCRIPT_PHASE:
+            steps = (run.output or {}).get("pipeline_steps") or []
+        elif external:
             if run.status != "completed":
                 continue
             steps = (run.output or {}).get("pipeline_steps")
@@ -223,8 +238,10 @@ def pipeline_snapshot(
                     "entrypoint": "external_agent" if external else "python",
                 "time": _timestamp(run.created_at if external else run.updated_at),
                     # External wall time is unknown; apply duration is not research duration.
+                    # Transcript retrieval is Seldon's own network work, so its time is real.
                     "duration_s": None
-                    if external or run.elapsed_ms is None
+                    if run.elapsed_ms is None
+                    or (external and run.phase != TRANSCRIPT_PHASE)
                     else run.elapsed_ms / 1000,
                     "error": run.error,
                 }
@@ -234,6 +251,8 @@ def pipeline_snapshot(
     stages = []
     for key, label in STAGES:
         matching = [item for item in history if item["stage"] == key]
+        if key in OPTIONAL_STAGES and not matching:
+            continue
         latest = matching[-1] if matching else {}
         stages.append(
             {

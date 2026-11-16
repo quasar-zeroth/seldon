@@ -22,6 +22,8 @@ Entities carry normalized tags; `research --db PATH library --tag data-center` f
 
 Recurring macro cycles (credit and speculation, war intensity, globalization, generational and political moods) are modeled with `research --db PATH cycles ...`: load dated series, fit and test harmonic or inertia/whiplash oscillator models, combine factors, render SVG charts, and link cycle priors to forecasts. Agents follow the [seldon-cycles skill](skills/seldon-cycles/SKILL.md); models and verdicts are explained in [docs/cycles.md](docs/cycles.md).
 
+Video links (mostly YouTube) become research with `research --db PATH transcripts ...`: fetch the transcript from YouTube captions or the Supadata API (`SUPADATA_API_KEY`, for videos without captions and other platforms), find shared entities it mentions, and ingest timestamped, quote-checked excerpts as evidence with the entities and relationships they support. The question's pipeline gains a **Video transcripts** stage. Agents follow the [seldon-transcripts skill](skills/seldon-transcripts/SKILL.md); see [docs/transcripts.md](docs/transcripts.md).
+
 ## Optional built-in model pipeline
 
 The built-in semantic coordinators still require a provider. Set credentials outside git using `.env.example` as the configuration reference. Supported provider presets, current model IDs, fallback policy, and environment overrides live in `src/seldon/config.py`; derive them there rather than relying on copied model lists.

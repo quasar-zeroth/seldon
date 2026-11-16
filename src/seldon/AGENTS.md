@@ -7,7 +7,7 @@ Seldon persists reusable evidence and explainable forecasts. Two storage generat
 | Location | Responsibility |
 | --- | --- |
 | [data/](data/AGENTS.md) | Canonical SQL scenarios, evidence KB, entity relationship graph (ERG), predictions, versions and audit records. |
-| [workspace/](workspace/AGENTS.md) | Provider-free agent exchange, scenario influence DAG validation, shared knowledge scope, reruns, reports, topic/source graphs and cycle factors on the same database. |
+| [workspace/](workspace/AGENTS.md) | Provider-free agent exchange, scenario influence DAG validation, shared knowledge scope, reruns, reports, topic/source graphs, cycle factors and video transcripts on the same database. |
 | [agents/](agents/AGENTS.md) | Built-in research, extraction, relationship, convergence, prediction, advanced analysis and feedback coordinators. |
 | [api/](api/AGENTS.md) | FastAPI routes, authentication, application factories and pipeline/operations wiring. |
 | [graph/](graph/AGENTS.md), [predictions/](predictions/AGENTS.md) | Legacy JSON graph and market-prediction files, accessed through `client.py`. |

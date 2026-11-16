@@ -8,6 +8,7 @@ The outermost [AGENTS.md](../AGENTS.md) contains the project-wide lookup table. 
 - [agent-workflow.md](agent-workflow.md): provider-free research, shared database/entity reuse, DAG updates, forecasts, reruns, reports, and CLI/HTTP handoff.
 - [topic-source-graphs.md](topic-source-graphs.md): attributed claims, scoped source judgments, ownership/affiliations, event history, and cross-layer connections.
 - [cycles.md](cycles.md): cycle factor records, harmonic and oscillator models, red-noise/holdout verdicts, hidden-cycle search, combination math and forecast integration. The operational procedure is the [seldon-cycles skill](../skills/seldon-cycles/SKILL.md).
+- [transcripts.md](transcripts.md): transcript services, versioned storage, excerpt checks, evidence/source semantics and pipeline effects. The operational procedure is the [seldon-transcripts skill](../skills/seldon-transcripts/SKILL.md).
 - [openrouter-models.md](openrouter-models.md): dated provider catalogue check and selection rationale; current configured values live in backend config.
 - [../GLOSSARY.md](../GLOSSARY.md): shared vocabulary; root design/plan files retain historical intent rather than an authoritative completion checklist.
 

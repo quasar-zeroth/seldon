@@ -190,6 +190,7 @@ class WorkspaceService:
             access = "Use this server's authenticated /workspace HTTP interface"
         from .cases import CASE_GENERATION_GUIDANCE
         from .cycles.catalog import CYCLE_GUIDANCE
+        from .transcripts.catalog import TRANSCRIPT_GUIDANCE
 
         data["research_handoff"] = (
             f"Read {repository / 'AGENTS.md'} and {repository / 'docs/agent-workflow.md'}. "
@@ -201,6 +202,7 @@ class WorkspaceService:
             "search tools, and persist material rounds with research apply. Distinguish observations, "
             "assumptions, and unknowns. Inspect perspectives export for conflicting claims, source affiliations, and dated trust/leaning assessments. Use perspectives catalog and perspectives connections to navigate entity/topic/claim/source paths, preserving explicit identities and relationship direction. Use perspectives apply to add sourced judgments; never treat repeated coverage as independent confirmation or an observation as a verified fact. Reconcile disputed or superseded claims explicitly in forecasts. Investigate counterevidence and record coverage and remaining gaps. "
             + CYCLE_GUIDANCE + " Procedure: skills/seldon-cycles/SKILL.md. "
+            + TRANSCRIPT_GUIDANCE + " "
             "For a current-state investigation, save a research summary without inventing a forecast. "
             "If a prediction is requested, define a future resolution date and measurable criteria, "
             "assess all scoped nodes, and save reviewed forecast branches. "
@@ -209,7 +211,8 @@ class WorkspaceService:
         )
         return data
 
-    def apply(self, payload: WorkspaceApply) -> dict:
+    def apply(self, payload: WorkspaceApply, *, media: list[dict] | None = None) -> dict:
+        """`media` is transcript provenance supplied by transcripts.ingest, not by callers' JSON."""
         # Savepoint makes Python/API callers safe even if they catch a validation
         # error and subsequently commit their outer transaction.
         connection = self.db.connection()
@@ -221,9 +224,9 @@ class WorkspaceService:
             # ensure releasing it cannot commit ahead of the caller's transaction.
             connection.exec_driver_sql("BEGIN IMMEDIATE")
         with self.db.begin_nested():
-            return self._apply(payload)
+            return self._apply(payload, media)
 
-    def _apply(self, p: WorkspaceApply) -> dict:
+    def _apply(self, p: WorkspaceApply, media: list[dict] | None = None) -> dict:
         # Serialize scenario mutations on SQLite and PostgreSQL before reading the
         # revision, without changing the scenario's timestamp on a no-op/replay.
         self.db.execute(
@@ -249,6 +252,8 @@ class WorkspaceService:
                 item.pop("tags", None)
         if request.get("forecast") and request["forecast"].get("case_bounds") is None:
             request["forecast"].pop("case_bounds", None)
+        if media:
+            request["media"] = media
         fingerprint = _digest(request)
         for run in before["runs"]:
             if run["input"].get("request_id") == p.request_id:

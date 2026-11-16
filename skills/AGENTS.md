@@ -5,6 +5,7 @@
 | Skill | Capability | Backed by |
 | --- | --- | --- |
 | [seldon-cycles](seldon-cycles/SKILL.md) | Cycle factors, historical series, harmonic/oscillator fits, hidden-cycle search, composites, charts, forecast priors | [workspace/cycles](../src/seldon/workspace/cycles/AGENTS.md), [docs/cycles.md](../docs/cycles.md) |
+| [seldon-transcripts](seldon-transcripts/SKILL.md) | Video links to transcripts (YouTube captions, Supadata), entity mentions, quote-checked excerpts ingested as evidence with nodes/edges, pipeline stage, rerun queuing | [workspace/transcripts](../src/seldon/workspace/transcripts/AGENTS.md), [docs/transcripts.md](../docs/transcripts.md) |
 
 Workflows that predate this directory still live in [agent-workflow.md](../docs/agent-workflow.md) (research workspace, reports, reruns) and [topic-source-graphs.md](../docs/topic-source-graphs.md) (perspectives). They meet most of the interface contract below but are not yet packaged as skills.
 
