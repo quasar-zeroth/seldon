@@ -411,8 +411,7 @@ class ContextGatheringCoordinator(AgentBase[ContextGatheringInput, ContextGather
         child_run_ids.append(f_run)
 
         # Use FactorDiscovery's subqueries as the primary plan. QueryDecomposer
-        # still runs to surface additional heuristic angles (e.g., contradiction
-        # and risk subqueries), but the factor-driven plan leads.
+        # is used only when factor discovery has not produced subqueries.
         if factors.subqueries:
             plan = factor_agent.to_query_plan(factors, timeframe=payload.timeframe)
         else:

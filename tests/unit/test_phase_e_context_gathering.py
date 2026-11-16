@@ -70,7 +70,7 @@ def test_context_gathering_api_runs_real_phase_e_workflow():
     assert runs[0]["id"] == body["id"]
     assert {run["agent_id"] for run in runs} >= {
         "context_gathering_coordinator",
-        "query_decomposer",
+        "factor_discovery",
         "information_retriever",
         "information_summarizer",
         "deduplication_delta_detector",

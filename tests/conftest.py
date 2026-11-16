@@ -46,3 +46,26 @@ class FakeLLM(dict):
 @pytest.fixture()
 def mock_llm():
     return FakeLLM()
+
+
+@pytest.fixture(autouse=True)
+def offline_http_by_default(request, monkeypatch):
+    """Only explicitly marked live tests may use httpx's network transports.
+
+    API unit tests construct real provider adapters, and .env may contain a real
+    key. MockTransport/ASGI/TestClient remain usable without risking API calls.
+    """
+    if request.node.get_closest_marker("live_openrouter"):
+        return
+    import httpx
+
+    def blocked(*args, **kwargs):
+        raise RuntimeError("Unmocked HTTP request in offline test; supply MockTransport or mark the test live_openrouter")
+
+    async def blocked_async(*args, **kwargs):
+        blocked()
+
+    from ddgs import DDGS
+    monkeypatch.setattr(DDGS, "text", blocked)
+    monkeypatch.setattr(httpx.HTTPTransport, "handle_request", blocked)
+    monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", blocked_async)

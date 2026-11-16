@@ -160,6 +160,6 @@ def test_agent_llm_helper_escalates_low_confidence_outputs():
 
         assert output.answer == "strong"
         assert [call["model"] for call in calls] == ["fast-model", "reasoning-model"]
-        message = db.scalar(select(AgentMessage))
+        message = db.scalar(select(AgentMessage).where(AgentMessage.agent_run_id == _run_id, AgentMessage.content.contains("Escalating query_decomposer")))
         assert message is not None
         assert "Escalating query_decomposer" in message.content
