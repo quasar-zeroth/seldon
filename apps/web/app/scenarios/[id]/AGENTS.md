@@ -6,6 +6,8 @@
 
 `error.tsx` and `loading.tsx` provide route boundaries. Charts are delegated to `charts-dashboard.tsx`; API behavior lives in the typed clients and Python backend.
 
+When present, lower/upper hot takes appear before the central case probabilities, with conditional assumptions, rationale and evidence links. Read bounds from built-in calibration data or the saved workspace forecast; older forecasts can lack bounds. Stress values use forecast units and are neither guaranteed limits nor extra probability-bearing branches.
+
 Job state currently requires refresh; queuing a job is not completion. Report links use the browser API base and ordinary anchors, so authenticated downloads need separate consideration. Preserve probability/assumption/evidence distinctions and do not imply every listed node or run belongs to this scenario without checking its links.
 
 Actual implementation, API contracts and tests are the source of truth; this file explains broad design. Update relevant AGENTS.md files when guidance is incorrect, missing or newly relevant. Keep maps concise; split growing detail into focused linked documentation.

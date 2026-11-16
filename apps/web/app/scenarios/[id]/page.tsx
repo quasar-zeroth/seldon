@@ -95,6 +95,8 @@ export default async function ScenarioDetail({ params, searchParams }: { params:
   const scopedJobs = jobs.filter((job) => job.payload?.scenario_id === params.id || job.id === searchParams?.job_id);
   const scopedNodes = nodes.filter((node) => node.scenario_ids.includes(params.id));
   const probabilities = probabilityEntries(latest);
+  const caseBounds = latest?.calibration_result?.case_bounds ?? latest?.calibration_result?.forecast?.case_bounds;
+  const forecastUnits = latest?.calibration_result?.forecast?.units;
 
   return <>
     <PageHeader
@@ -129,6 +131,24 @@ export default async function ScenarioDetail({ params, searchParams }: { params:
         </form>
         {searchParams?.job_id ? <p className="muted">Queued job {searchParams.job_id}. Refresh to follow persisted job status.</p> : null}
       </Card>
+      {caseBounds ? <Card title="Hot takes: conditional stress bounds">
+        <p className="muted">These extremes inform the bear, base and bull cases. They are conditional scenarios with no separate probability; outcomes can fall beyond them.</p>
+        <div className="form-stack">{([
+          ["lower", "Everything goes wrong — lower bound"],
+          ["upper", "Everything goes right — upper bound"],
+        ] as const).map(([key, label]) => {
+          const bound = caseBounds[key];
+          return <article key={key}>
+            <h3>{label}</h3>
+            <strong>{bound.outcome}</strong>
+            {bound.value != null ? <p>Stress value: {bound.value.toLocaleString()} {forecastUnits || "in forecast units"}</p> : null}
+            <p>{bound.rationale}</p>
+            <p className="muted">Conditions required</p>
+            <ul>{bound.assumptions.map((assumption, index) => <li key={index}>{assumption}</li>)}</ul>
+            <div className="pill-row">{[...new Set(bound.evidence_ids)].map((id) => <EvidencePill key={id} id={id} href={`/kb/${id}`} />)}</div>
+          </article>;
+        })}</div>
+      </Card> : null}
       <Card title="Latest prediction">
         {latest ? <>
           <strong>{latest.statement}</strong>
