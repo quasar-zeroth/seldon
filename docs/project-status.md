@@ -14,6 +14,8 @@ The broad pipeline is evidence gathering → extraction → relationships/conver
 
 ## Supported now
 
+Case generation now starts with lower/upper conditional hot takes before central branches. Built-in live synthesis requires sourced bounds; external-agent handoffs instruct the same workflow, with an optional contract field for older clients. Bounds persist in forecast history and appear in workspace reports/exports; they do not add probability mass or establish hard price limits. See [case contracts](../src/seldon/workspace/cases.py).
+
 | Capability | Current behavior and implementation evidence |
 | --- | --- |
 | Persistence and auditability | SQLite and PostgreSQL engine support; evidence versions, contradictions, scenarios, ERG, predictions, runs/messages/model calls, audit records and migrations. [Data map](../src/seldon/data/AGENTS.md), [migration map](../alembic/AGENTS.md). |

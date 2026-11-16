@@ -46,6 +46,7 @@ Use the [root AGENTS.md lookup table](AGENTS.md) to locate owning modules and [p
 | Node assessment | Evidence-backed forecast/judgment for one included node, connected to upstream reasoning. |
 | Forecast / prediction | Saved judgment about future outcomes, with context and uncertainty. External forecasts append records; built-in updates also use version history. |
 | Branch / outcome key | One possible forecast outcome and its identifier. Workspace branches must form a declared mutually exclusive/exhaustive distribution whose probabilities sum to one. |
+| Hot takes / case bounds | Conditional all-adverse and all-favourable driver scenarios constructed before bear/base/bull cases. They describe a stress envelope with explicit assumptions and evidence, not guaranteed limits, confidence intervals or additional probability mass. |
 | Probability / confidence | Probability expresses an outcome likelihood; confidence expresses support/certainty about a judgment. Neither becomes calibrated merely by validation. |
 | Horizon / resolution criterion | The time scope and measurable rule used to judge an outcome. Current-state research can use an as-of scope; forecasts require appropriate future resolution information. |
 | Base rate / prior | Reference probability before scenario-specific reasoning. Current built-in anchors can derive from stored forecast probabilities or defaults, not empirical outcome frequencies. |
